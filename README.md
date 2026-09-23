@@ -47,6 +47,8 @@ It shows your entity and device trackers as round markers with their picture, dr
 - [Configuration](#configuration)
   - [Card Options](#card-options)
   - [Entity Options](#entity-options)
+  - [Style Files](#style-files)
+  - [Control Colors](#control-colors)
   - [How Centering and Zooming Work](#how-centering-and-zooming-work)
   - [Example YAML](#example-yaml)
 - [Credits](#credits)
@@ -62,6 +64,8 @@ The map comes from one `.pmtiles` file that sits in your Home Assistant `www` fo
 
 ### 🎨 Fully Restylable
 Start from one of five built-in looks (`light`, `dark`, `white`, `grayscale`, `black`) and change anything you like: the color of water, parks, buildings, every road type, labels, borders, even the road number shields. Want your map to look like that old road atlas in your glovebox? You can.
+
+Save a complete look in one style file and use it on every dashboard, then tweak it per card where you like. The zoom, reset and lat/lon controls can be recolored too, so they match your map.
 
 ### 👤 Live Entity Tracking
 Add your `person` or `device_tracker` entities and they show up as round markers with their entity picture (or their initials if there is no picture). Markers move live as positions change, without flickering.
@@ -154,10 +158,12 @@ The card is configured in YAML.
 | :--- | :--- | :--- | :--- |
 | `pmtiles_url` | string | **required** | Where your map file lives, e.g. `/local/my-map.pmtiles`. |
 | `map_height` | string | `300px` | Height of the map. Any CSS value works, e.g. `500px` or `calc(100vh - 100px)`. |
-| `flavor` | string | `light` | The base map style: `light`, `dark`, `white`, `grayscale` or `black`. |
-| `seasoning` | object | – | Change individual map colors on top of the chosen `flavor`, e.g. `water: '#93C2DC'` or `highway: '#FFC638'`. Also accepts `shield_fill` and `shield_border` to recolor the road number shields. |
+| `flavor` | string | `light` | The base map style: `light`, `dark`, `white`, `grayscale` or `black`. Or the URL of a style file (`.yaml`, `.yml` or `.json`), e.g. `/local/chrono-styles/my-style.yaml`. See [Style Files](#style-files). |
+| `seasoning` | object | – | Change individual map colors on top of the chosen `flavor`, e.g. `water: '#93C2DC'` or `highway: '#FFC638'`. Inside the `pois` and `landcover` groups you can change a single color; the other colors in that group stay as they are. Also accepts `shield_fill` and `shield_border` to recolor the road number shields. |
+| `controls` | object | – | Colors of the map controls (zoom buttons, reset button, zoom level and lat/lon display). See [Control Colors](#control-colors). |
 | `layers` | object | – | Fine-tune individual map layers by name (e.g. `roads_highway`, `roads_shields`). Per layer you can set `paint` and `layout` properties, like line widths or label sizes. |
 | `show_zoom_level` | boolean | `false` | Show the current zoom level in the bottom left corner. Handy while you are tuning your map. |
+| `show_lat_lon` | boolean | `false` | Show the latitude and longitude of the map center (`lat: 51.4412 lon: 5.4781`) in the bottom right corner, just above the attribution. Updates while you drag the map. |
 | `entities` | list | `[]` | The entities to show on the map. Each entry is either just an entity id, or an object with extra options (see [Entity Options](#entity-options)). |
 | `hours_to_show` | number | `0` | How many hours of history to draw as a trail. `0` = markers only, no trail. |
 | `history_line_color` | string | entity `color` | Default trail color for all entities. |
@@ -188,6 +194,79 @@ or an object with its own settings, which override the card-wide ones:
 | `history_line_width` | number | card setting | Trail line width in px for this entity. |
 | `history_dot_radius` | number | card setting | Size of this entity's trail points in px. |
 
+### Style Files
+
+A style file holds a complete map look in one place, so you can use the same style on several cards and dashboards. Put it anywhere in your `config/www/` folder, for example `config/www/chrono-styles/my-style.yaml`, and point `flavor` at it:
+
+```yaml
+flavor: /local/chrono-styles/my-style.yaml
+```
+
+A style file can be YAML (`.yaml` or `.yml`) or JSON (`.json`), and can contain these keys:
+
+| Key | Description |
+| :--- | :--- |
+| `flavor` | The built-in look the style starts from: `light`, `dark`, `white`, `grayscale` or `black`. Default `light`. |
+| `seasoning` | Map colors, same as the card's `seasoning`. |
+| `layers` | Layer fine-tuning, same as the card's `layers`. |
+| `controls` | Control colors, same as the card's `controls`. |
+
+Any other key, such as `name` or `version`, is allowed and simply ignored, so you can use them to label your styles.
+
+**The order in which styling is applied.** Each step overrides individual settings of the step before it; everything it doesn't mention stays as it was:
+
+1. The built-in flavor.
+2. The style file's `seasoning`, `layers` and `controls`.
+3. The card's own `seasoning`, `layers` and `controls`.
+
+So a shared style file can still be tweaked per card. For example, the style file sets a `line-color` for `roads_highway` and the card sets its `line-width`: both are used.
+
+If the style file can't be found or can't be read, the card behaves as if `flavor` was not set at all: the `light` look, plus the card's own settings.
+
+A small example style file:
+
+```yaml
+name: road atlas
+version: 1.0.0
+flavor: light
+seasoning:
+  background: '#F5EFCF'
+  earth: '#F5EFCF'
+  water: '#93C2DC'
+  highway: '#FFC638'
+  major: '#D83030'
+  pois:
+    red: '#D83030'
+layers:
+  roads_shields:
+    layout:
+      text-size: 12
+controls:
+  background: '#000000'
+  color: '#FFFFFF'
+```
+
+### Control Colors
+
+The `controls` key recolors the zoom `+`/`−` buttons, the reset focus button, the zoom level display (`show_zoom_level`) and the lat/lon display (`show_lat_lon`). Any key you leave out keeps the default look.
+
+| Key | Applies to | Description |
+| :--- | :--- | :--- |
+| `background` | all controls | Background color. |
+| `color` | all controls | Color of the `+`/`−` signs, the reset icon and the text. |
+| `border` | buttons | The thin line between the buttons. |
+| `hover_background` | buttons | Background while the mouse is over a button. |
+| `disabled_background` | zoom buttons | Background of a zoom button that can't be used (e.g. `+` at the highest zoom). Without it, `background` is used. |
+| `disabled_color` | zoom buttons | Color of the sign on such a button. |
+
+```yaml
+controls:
+  background: '#000000'
+  color: '#FFFFFF'
+  hover_background: '#333333'
+  disabled_color: '#777777'
+```
+
 ### How Centering and Zooming Work
 
 Three settings work together: `center`, `initial_zoom_level` and `auto_fit`. The simple rule is: **what you set yourself always wins, and `auto_fit` fills in the rest.**
@@ -217,6 +296,7 @@ pmtiles_url: /local/my-map.pmtiles
 map_height: 500px
 flavor: light
 show_zoom_level: true
+show_lat_lon: true
 center: zone.home
 hours_to_show: 4
 history_line_width: 6
@@ -236,6 +316,9 @@ layers:
     layout:
       text-size: 12
       icon-size: 1.1
+controls:
+  background: '#000000'
+  color: '#FFFFFF'
 ```
 
 ---
