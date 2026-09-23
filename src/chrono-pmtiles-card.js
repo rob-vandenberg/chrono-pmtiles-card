@@ -11,9 +11,17 @@ import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2'
 import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.2.41';
+const CARD_VERSION = '0.2.42';
 
 // --- Version History ---------------------------------------------------------
+// v0.2.42: New "show_lat_lon" key (default false), per explicit instruction:
+//          a bottomright control directly above the attribution label showing
+//          the map center on one line as "lat: 51.4412 lon: 5.4781" (4
+//          decimals), updated continuously on Leaflet's "move" event (while
+//          dragging, and during zoom). Longitude from getCenter().wrap(), so
+//          it stays within -180..180 (maxBounds has no longitude limit).
+//          Same look as the zoom-level display and follows "controls"
+//          background/color.
 // v0.2.41: Map control colors, per explicit instruction. New top-level key
 //          "controls" (card config and style file) with individual keys:
 //          background, color, border, hover_background, disabled_background,
@@ -677,7 +685,7 @@ function buildControlsCss(controls) {
       ['background-color', controls.disabled_background],
       ['color', controls.disabled_color],
     ]),
-    rule('.map-container .chrono-zoom-level', [
+    rule('.map-container .chrono-zoom-level, .map-container .chrono-center', [
       ['background', controls.background],
       ['color', controls.color],
     ]),
@@ -1071,7 +1079,7 @@ class ChronoPmtilesCard extends LitElement {
       width: 100%;
       height: 100%;
     }
-    .chrono-zoom-level {
+    .chrono-zoom-level, .chrono-center {
       background: rgba(255,255,255,0.85);
       color: #333;
     }
@@ -1197,6 +1205,9 @@ class ChronoPmtilesCard extends LitElement {
     this._addResetFocusControl();
     if (this._config.show_zoom_level) {
       this._addZoomLevelControl();
+    }
+    if (this._config.show_lat_lon) {
+      this._addCenterControl();
     }
 
     // v0.2.40: the style may need a style file fetched first, so the
@@ -1454,6 +1465,29 @@ class ChronoPmtilesCard extends LitElement {
       },
     });
     new ZoomLevelControl().addTo(this._leafletMap);
+  }
+
+  // v0.2.42: adds a Leaflet control (bottomright) showing the map center as
+  // "lat: .. lon: .." with 4 decimals, updated on every "move" event. Leaflet
+  // inserts bottom-corner controls above the ones already there, so this
+  // lands directly above the attribution label (created with the map). Only
+  // added when "show_lat_lon" is true in config (default false).
+  _addCenterControl() {
+    const CenterControl = L.Control.extend({
+      options: { position: 'bottomright' },
+      onAdd: (map) => {
+        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control chrono-center');
+        container.style.cssText = 'padding:2px 6px;font:bold 12px sans-serif;white-space:nowrap;';
+        const render = () => {
+          const c = map.getCenter().wrap();
+          container.textContent = `lat: ${c.lat.toFixed(4)} lon: ${c.lng.toFixed(4)}`;
+        };
+        render();
+        map.on('move', render);
+        return container;
+      },
+    });
+    new CenterControl().addTo(this._leafletMap);
   }
 
   _teardownMap() {
