@@ -11,9 +11,19 @@ import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2'
 import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.2.44';
+const CARD_VERSION = '0.2.45';
 
 // --- Version History ---------------------------------------------------------
+// v0.2.45: Zoom preset buttons, per explicit instruction. New keys
+//          show_zoom_buttons (default false) and zoom_buttons (list of zoom
+//          levels, e.g. [1, 8, 12, 18]). Shown top right, one box per level,
+//          stacked, same look as the zoom-level display. A click zooms to that
+//          level keeping the current center (animated); the button of the
+//          current zoom level is highlighted in the disabled colors (default
+//          #f4f4f4 / #bbb, overridable via controls.disabled_background /
+//          disabled_color). Follows controls background, color and
+//          hover_background. Levels outside the card's zoom limits (1-18 by
+//          default) are left out; the valid ones are still shown.
 // v0.2.44: lat/lon display (show_lat_lon) moved to the bottom center, at the
 //          same height as the zoom-level display, and its text can now be
 //          selected with the mouse (drag, double- or triple-click) and copied
@@ -703,9 +713,18 @@ function buildControlsCss(controls) {
       ['background-color', controls.disabled_background],
       ['color', controls.disabled_color],
     ]),
-    rule('.map-container .chrono-zoom-level, .map-container .chrono-center', [
+    rule('.map-container .chrono-zoom-level, .map-container .chrono-center, .map-container .chrono-zoom-button', [
       ['background', controls.background],
       ['color', controls.color],
+    ]),
+    // v0.2.45: zoom preset buttons -- hover, and the highlighted button of
+    // the current zoom level (disabled colors, as for Leaflet's buttons).
+    rule('.map-container .chrono-zoom-button:hover', [
+      ['background', controls.hover_background],
+    ]),
+    rule('.map-container .chrono-zoom-button.chrono-zoom-button-active', [
+      ['background', controls.disabled_background],
+      ['color', controls.disabled_color],
     ]),
   ].filter(Boolean).join('\n');
 }
@@ -1097,9 +1116,21 @@ class ChronoPmtilesCard extends LitElement {
       width: 100%;
       height: 100%;
     }
-    .chrono-zoom-level, .chrono-center {
+    .chrono-zoom-level, .chrono-center, .chrono-zoom-button {
       background: rgba(255,255,255,0.85);
       color: #333;
+    }
+    .chrono-zoom-button:hover {
+      background: #f4f4f4;
+    }
+    /* Highlighted button of the current zoom level. Same default colors as
+       Leaflet's disabled buttons; more specific than the "controls"
+       background/color rule so the highlight stays visible when only those
+       are set; "controls" disabled_background/disabled_color override it. */
+    .map-container .chrono-zoom-button.chrono-zoom-button-active {
+      background: #f4f4f4;
+      color: #bbb;
+      cursor: default;
     }
   `;
 
@@ -1226,6 +1257,9 @@ class ChronoPmtilesCard extends LitElement {
     }
     if (this._config.show_lat_lon) {
       this._addCenterControl();
+    }
+    if (this._config.show_zoom_buttons) {
+      this._addZoomButtonsControl();
     }
 
     // v0.2.40: the style may need a style file fetched first, so the
@@ -1502,6 +1536,48 @@ class ChronoPmtilesCard extends LitElement {
   // from starting a map drag (which moved the map and, through "move",
   // replaced the text and so the selection) and a double-click from
   // zooming the map.
+  // v0.2.45: zoom preset buttons (topright), one per level in
+  // "zoom_buttons", stacked, with the same look as the zoom-level display.
+  // A click zooms to that level and keeps the current center (animated, like
+  // the +/- buttons). The button of the current zoom level is highlighted
+  // (class chrono-zoom-button-active, updated on "zoomend"); clicking it does
+  // nothing. Levels outside the card's zoom limits (1-18 by default) are
+  // left out; the others are still shown. Only added when
+  // "show_zoom_buttons" is true (default false).
+  _addZoomButtonsControl() {
+    const { minZoom, maxZoom } = this._zoomLimits();
+    const levels = (Array.isArray(this._config.zoom_buttons) ? this._config.zoom_buttons : [])
+      .filter((level) => typeof level === 'number' && level >= minZoom && level <= maxZoom);
+    if (levels.length === 0) return;
+    const ZoomButtonsControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: (map) => {
+        const container = L.DomUtil.create('div', 'leaflet-control chrono-zoom-buttons');
+        L.DomEvent.disableClickPropagation(container);
+        const buttons = levels.map((level, index) => {
+          const button = L.DomUtil.create('div', 'leaflet-bar chrono-zoom-button', container);
+          button.style.cssText = `padding:2px 6px;font:bold 12px sans-serif;text-align:center;cursor:pointer;${index > 0 ? 'margin-top:4px;' : ''}`;
+          button.textContent = String(level);
+          button.title = `Zoom to level ${level}`;
+          L.DomEvent.on(button, 'click', () => {
+            if (map.getZoom() !== level) map.setZoom(level);
+          });
+          return { level, button };
+        });
+        const highlight = () => {
+          const zoom = map.getZoom();
+          for (const { level, button } of buttons) {
+            button.classList.toggle('chrono-zoom-button-active', zoom === level);
+          }
+        };
+        highlight();
+        map.on('zoomend', highlight);
+        return container;
+      },
+    });
+    new ZoomButtonsControl().addTo(this._leafletMap);
+  }
+
   _addCenterControl() {
     const map = this._leafletMap;
     const container = L.DomUtil.create('div', 'leaflet-bar chrono-center', map.getContainer());

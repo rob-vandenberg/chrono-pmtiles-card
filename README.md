@@ -164,6 +164,8 @@ The card is configured in YAML.
 | `controls` | object | – | Colors of the map controls (zoom buttons, reset button, zoom level and lat/lon display). See [Control Colors](#control-colors). |
 | `layers` | object | – | Fine-tune individual map layers by name (e.g. `roads_highway`, `roads_shields`). Per layer you can set `paint` and `layout` properties, like line widths or label sizes. |
 | `show_zoom_level` | boolean | `false` | Show the current zoom level in the bottom left corner. Handy while you are tuning your map. |
+| `show_zoom_buttons` | boolean | `false` | Show zoom buttons in the top right corner, one for each level in `zoom_buttons`. A click jumps to that zoom level and keeps the current center. The button of the level you are at is highlighted. |
+| `zoom_buttons` | list | – | The zoom levels for `show_zoom_buttons`, e.g. `[1, 8, 12, 18]`. Levels below 1 or above 18 are left out. |
 | `show_lat_lon` | boolean | `false` | Show the latitude and longitude of the map center (`lat: 51.4412 lon: 5.4781`) in the bottom right corner, just above the attribution. Updates while you drag the map. |
 | `entities` | list | `[]` | The entities to show on the map. Each entry is either just an entity id, or an object with extra options (see [Entity Options](#entity-options)). |
 | `hours_to_show` | number | `0` | How many hours of history to draw as a trail. `0` = markers only, no trail. |
@@ -249,7 +251,7 @@ controls:
 
 ### Control Colors
 
-The `controls` key recolors the zoom `+`/`−` buttons, the reset focus button, the zoom level display (`show_zoom_level`) and the lat/lon display (`show_lat_lon`). Any key you leave out keeps the default look.
+The `controls` key recolors the zoom `+`/`−` buttons, the reset focus button, the zoom buttons (`show_zoom_buttons`), the zoom level display (`show_zoom_level`) and the lat/lon display (`show_lat_lon`). Any key you leave out keeps the default look.
 
 | Key | Applies to | Description |
 | :--- | :--- | :--- |
@@ -257,8 +259,8 @@ The `controls` key recolors the zoom `+`/`−` buttons, the reset focus button, 
 | `color` | all controls | Color of the `+`/`−` signs, the reset icon and the text. |
 | `border` | buttons | The thin line between the buttons. |
 | `hover_background` | buttons | Background while the mouse is over a button. |
-| `disabled_background` | zoom buttons | Background of a zoom button that can't be used (e.g. `+` at the highest zoom). Without it, `background` is used. |
-| `disabled_color` | zoom buttons | Color of the sign on such a button. |
+| `disabled_background` | zoom buttons | Background of a `+`/`−` button that can't be used (e.g. `+` at the highest zoom). Without it, `background` is used. Also the background of the highlighted button in `zoom_buttons`. |
+| `disabled_color` | zoom buttons | Color of the sign on such a button, and the text color of the highlighted button in `zoom_buttons`. |
 
 ```yaml
 controls:
