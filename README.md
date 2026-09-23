@@ -159,6 +159,7 @@ The card is configured in YAML.
 | `pmtiles_url` | string | **required** | Where your map file lives, e.g. `/local/my-map.pmtiles`. |
 | `map_height` | string | `300px` | Height of the map. Any CSS value works, e.g. `500px` or `calc(100vh - 100px)`. |
 | `flavor` | string | `light` | The base map style: `light`, `dark`, `white`, `grayscale` or `black`. Or the URL of a style file (`.yaml`, `.yml` or `.json`), e.g. `/local/chrono-styles/my-style.yaml`. See [Style Files](#style-files). |
+| `cache` | boolean | `true` | Set to `false` while you are developing a style file: the card then loads the style file fresh from your server every time, instead of a copy the browser saved earlier. Only affects the style file. |
 | `seasoning` | object | – | Change individual map colors on top of the chosen `flavor`, e.g. `water: '#93C2DC'` or `highway: '#FFC638'`. Inside the `pois` and `landcover` groups you can change a single color; the other colors in that group stay as they are. Also accepts `shield_fill` and `shield_border` to recolor the road number shields. |
 | `controls` | object | – | Colors of the map controls (zoom buttons, reset button, zoom level and lat/lon display). See [Control Colors](#control-colors). |
 | `layers` | object | – | Fine-tune individual map layers by name (e.g. `roads_highway`, `roads_shields`). Per layer you can set `paint` and `layout` properties, like line widths or label sizes. |

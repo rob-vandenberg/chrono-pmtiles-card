@@ -11,9 +11,19 @@ import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2'
 import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.2.43';
+const CARD_VERSION = '0.2.44';
 
 // --- Version History ---------------------------------------------------------
+// v0.2.44: lat/lon display (show_lat_lon) moved to the bottom center, at the
+//          same height as the zoom-level display, and its text can now be
+//          selected with the mouse (drag, double- or triple-click) and copied
+//          with Ctrl+C, per explicit instruction. Previously a mousedown on it
+//          started a map drag, whose "move" events replaced the text and so
+//          the selection. Now a plain element in the map container instead of
+//          a Leaflet control (Leaflet has no bottom-center corner), with
+//          click/scroll propagation to the map stopped; a double-click on it
+//          no longer zooms the map. Removed in _teardownMap(). Text format
+//          and "controls" styling unchanged.
 // v0.2.43: New "cache" key (default true), per explicit instruction. With
 //          cache: false the style file is fetched with fetch()'s
 //          cache: 'no-store' option, so the browser always loads it fresh
@@ -1480,25 +1490,40 @@ class ChronoPmtilesCard extends LitElement {
   // inserts bottom-corner controls above the ones already there, so this
   // lands directly above the attribution label (created with the map). Only
   // added when "show_lat_lon" is true in config (default false).
+  // v0.2.44: no longer a Leaflet control -- Leaflet only has four corners,
+  // so a bottom-center position needs a plain element. It is placed inside
+  // the map's own container (map.getContainer(), the Leaflet container), so
+  // Leaflet's .leaflet-bar styling applies exactly as it does to the
+  // zoom-level control (including the .leaflet-touch border), and at the
+  // same height: bottom 10px = leaflet.css ".leaflet-bottom .leaflet-control
+  // { margin-bottom: 10px }" with the corner at bottom 0; z-index 1000 as
+  // Leaflet's control corners. Text is selectable (drag, double/triple
+  // click, then Ctrl+C): disableClickPropagation() stops a mousedown here
+  // from starting a map drag (which moved the map and, through "move",
+  // replaced the text and so the selection) and a double-click from
+  // zooming the map.
   _addCenterControl() {
-    const CenterControl = L.Control.extend({
-      options: { position: 'bottomright' },
-      onAdd: (map) => {
-        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control chrono-center');
-        container.style.cssText = 'padding:2px 6px;font:bold 12px sans-serif;white-space:nowrap;';
-        const render = () => {
-          const c = map.getCenter().wrap();
-          container.textContent = `lat: ${c.lat.toFixed(4)} lon: ${c.lng.toFixed(4)}`;
-        };
-        render();
-        map.on('move', render);
-        return container;
-      },
-    });
-    new CenterControl().addTo(this._leafletMap);
+    const map = this._leafletMap;
+    const container = L.DomUtil.create('div', 'leaflet-bar chrono-center', map.getContainer());
+    container.style.cssText = 'position:absolute;bottom:10px;left:50%;transform:translateX(-50%);z-index:1000;padding:2px 6px;font:bold 12px sans-serif;white-space:nowrap;user-select:text;-webkit-user-select:text;cursor:text;';
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
+    const render = () => {
+      const c = map.getCenter().wrap();
+      container.textContent = `lat: ${c.lat.toFixed(4)} lon: ${c.lng.toFixed(4)}`;
+    };
+    render();
+    map.on('move', render);
+    this._centerControlEl = container;
   }
 
   _teardownMap() {
+    // v0.2.44: the lat/lon display is not a Leaflet control, so map.remove()
+    // does not remove it.
+    if (this._centerControlEl) {
+      this._centerControlEl.remove();
+      this._centerControlEl = null;
+    }
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
       this._resizeObserver = null;
