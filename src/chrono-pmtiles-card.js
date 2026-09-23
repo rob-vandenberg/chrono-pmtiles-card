@@ -11,9 +11,15 @@ import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2'
 import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.2.42';
+const CARD_VERSION = '0.2.43';
 
 // --- Version History ---------------------------------------------------------
+// v0.2.43: New "cache" key (default true), per explicit instruction. With
+//          cache: false the style file is fetched with fetch()'s
+//          cache: 'no-store' option, so the browser always loads it fresh
+//          from the server and does not store it -- meant for developing a
+//          style file. Affects the style file only; the map file, sprites,
+//          fonts and library CSS are unchanged.
 // v0.2.42: New "show_lat_lon" key (default false), per explicit instruction:
 //          a bottomright control directly above the attribution label showing
 //          the map center on one line as "lat: 51.4412 lon: 5.4781" (4
@@ -578,9 +584,11 @@ function isStyleFileUrl(flavor) {
 // Fetches and parses a style file; the extension picks the parser. Returns
 // null when the file is missing, cannot be parsed, or does not contain an
 // object -- the caller then handles it as if "flavor" were not set.
-async function loadStyleFile(url) {
+// v0.2.43: useCache false -> cache: 'no-store' (always fresh from the
+// server, never stored in the browser cache).
+async function loadStyleFile(url, useCache = true) {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, useCache ? undefined : { cache: 'no-store' });
     if (!response.ok) {
       console.error(`[chrono-pmtiles-card] Style file "${url}" not loaded: HTTP ${response.status}`);
       return null;
@@ -641,7 +649,7 @@ async function resolveStyle(config) {
   let file = null;
   let flavorName = config.flavor;
   if (isStyleFileUrl(config.flavor)) {
-    file = await loadStyleFile(config.flavor);
+    file = await loadStyleFile(config.flavor, config.cache !== false);
     flavorName = file?.flavor;
   }
   flavorName = flavorName ?? DEFAULT_THEME;
