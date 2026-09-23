@@ -5,515 +5,75 @@
 import { LitElement, html, css } from 'https://unpkg.com/lit@2.0.0/index.js?module';
 import L                         from 'https://esm.sh/leaflet@1.9.4';
 import * as maplibregl           from 'https://esm.sh/maplibre-gl@6.10.0';
-import 'https://esm.sh/@maplibre/maplibre-gl-leaflet@0.1.4?deps=maplibre-gl@6.10.0,leaflet@1.9.4';  // side-effect import: attaches L.maplibreGL. The ?deps= pin forces this package's internal "maplibre-gl"/"leaflet" imports to resolve to the SAME instances imported above, instead of a separate copy -- without it, addProtocol() registers on a different maplibregl instance than the one leaflet-maplibre-gl actually uses internally.
+import 'https://esm.sh/@maplibre/maplibre-gl-leaflet@0.1.4?deps=maplibre-gl@6.10.0,leaflet@1.9.4';  // attaches L.maplibreGL; ?deps= pins it to the same maplibre-gl/leaflet instances as above
 import { Protocol }              from 'https://esm.sh/pmtiles@4.5.0';
-import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2';  // No ?deps= pin needed: this package has no maplibre-gl/leaflet dependency of its own (confirmed via npm registry metadata) -- it only generates plain style-spec layer objects, so the module-duplication issue that affects maplibre-gl-leaflet above cannot apply here.
-import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
+import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2';  // no ?deps= needed: no maplibre-gl/leaflet dependency of its own
+import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // style files (v0.2.40)
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.2.45';
+const CARD_VERSION = '0.2.46';
 
 // --- Version History ---------------------------------------------------------
-// v0.2.45: Zoom preset buttons, per explicit instruction. New keys
-//          show_zoom_buttons (default false) and zoom_buttons (list of zoom
-//          levels, e.g. [1, 8, 12, 18]). Shown top right, one box per level,
-//          stacked, same look as the zoom-level display. A click zooms to that
-//          level keeping the current center (animated); the button of the
-//          current zoom level is highlighted in the disabled colors (default
-//          #f4f4f4 / #bbb, overridable via controls.disabled_background /
-//          disabled_color). Follows controls background, color and
-//          hover_background. Levels outside the card's zoom limits (1-18 by
-//          default) are left out; the valid ones are still shown.
-// v0.2.44: lat/lon display (show_lat_lon) moved to the bottom center, at the
-//          same height as the zoom-level display, and its text can now be
-//          selected with the mouse (drag, double- or triple-click) and copied
-//          with Ctrl+C, per explicit instruction. Previously a mousedown on it
-//          started a map drag, whose "move" events replaced the text and so
-//          the selection. Now a plain element in the map container instead of
-//          a Leaflet control (Leaflet has no bottom-center corner), with
-//          click/scroll propagation to the map stopped; a double-click on it
-//          no longer zooms the map. Removed in _teardownMap(). Text format
-//          and "controls" styling unchanged.
-// v0.2.43: New "cache" key (default true), per explicit instruction. With
-//          cache: false the style file is fetched with fetch()'s
-//          cache: 'no-store' option, so the browser always loads it fresh
-//          from the server and does not store it -- meant for developing a
-//          style file. Affects the style file only; the map file, sprites,
-//          fonts and library CSS are unchanged.
-// v0.2.42: New "show_lat_lon" key (default false), per explicit instruction:
-//          a bottomright control directly above the attribution label showing
-//          the map center on one line as "lat: 51.4412 lon: 5.4781" (4
-//          decimals), updated continuously on Leaflet's "move" event (while
-//          dragging, and during zoom). Longitude from getCenter().wrap(), so
-//          it stays within -180..180 (maxBounds has no longitude limit).
-//          Same look as the zoom-level display and follows "controls"
-//          background/color.
-// v0.2.41: Map control colors, per explicit instruction. New top-level key
-//          "controls" (card config and style file) with individual keys:
-//          background, color, border, hover_background, disabled_background,
-//          disabled_color. Applies to the zoom +/- buttons, the reset-focus
-//          button and the zoom-level display (background/color only). Same
-//          order as all other styling: style file first, card config on top,
-//          per individual key; keys left out keep the current look. Applied
-//          as a constructed stylesheet in the card's shadow root (not inline
-//          styles), so Leaflet's hover and disabled states keep working;
-//          selectors are prefixed with .map-container so they win over
-//          leaflet.css regardless of load order. The zoom-level display's
-//          hardcoded background/color moved from its inline style into the
-//          card's static styles (same values) so "controls" can override it.
-// v0.2.40: Style files, per explicit instruction. "flavor" can now also be a
-//          URL to a .yaml, .yml or .json style file (extension picks the
-//          parser: js-yaml for .yaml/.yml, JSON.parse for .json). A style
-//          file can contain "flavor" (a built-in name), "seasoning" and
-//          "layers". Styling is applied in this order, each level overriding
-//          individual settings of the one before:
-//            1. built-in flavor: the config's built-in name, else the style
-//               file's "flavor", else light;
-//            2. the style file's seasoning and layers;
-//            3. the card config's own seasoning and layers.
-//          Within a group (a layer's paint/layout, seasoning's pois/
-//          landcover) individual settings are merged, so setting one element
-//          leaves the rest of that group untouched. BEHAVIOR CHANGE: this
-//          also applies to the card config's own seasoning (previously one
-//          pois/landcover key replaced the whole group). A style file that
-//          is missing, cannot be parsed or does not contain an object is
-//          handled as if "flavor" were not set.
-//          The style is now built asynchronously in _buildStyle(); _initMap()
-//          still creates the Leaflet map and controls synchronously and adds
-//          the MapLibre layer when the style is ready (skipped if the card
-//          was torn down in the meantime). applyShieldColors() now receives
-//          the merged seasoning and the resolved flavor name.
-// v0.1.34: Fix history trails missing most points for "person" entities
-//          (sparse trail with long straight segments, while chrono-map-card
-//          showed the full route for the same entity and period). Root cause,
-//          confirmed against HA core source: /api/history/period defaults to
-//          significant_changes_only, which for domains outside the recorder's
-//          SIGNIFICANT_DOMAINS (person is not in it) returns only rows where
-//          the state itself changed, dropping attribute-only GPS updates.
-//          Fixed by adding significant_changes_only=0 to the request in
-//          fetchEntityTrailHistory().
-// v0.1.33: Fix: two or more entities at exactly the same coordinates (e.g.
-//          router-based presence reporting the zone's own coordinates) got
-//          DEFAULT_ZOOM_LEVEL (11) instead of being treated as a fit. The
-//          "nothing to fit -> 11" rule applies to a SINGLE entity only; 2+
-//          entities on one spot are the tightest possible fit and now get
-//          max_auto_fit_zoom (default 14), same as entities a few meters
-//          apart.
-// v0.1.32: Zoom/center rework, per explicit instruction. Fixes the map
-//          zooming all the way in (to max zoom) when all tracked entities are
-//          a few meters apart (e.g. everyone at home with slightly different
-//          GPS positions): the fitted box was tiny but not zero, and nothing
-//          capped the fitted zoom.
-//          - Decoupled center and zoom; each key controls one thing, explicit
-//            settings win for their own part, "auto_fit" fills in the rest:
-//              Center: "center" if set; else, with auto_fit, the middle of
-//                      the entities; else zone.home.
-//              Zoom:   initial_zoom_level if set; else, with auto_fit, the
-//                      fitted zoom clamped to [min_auto_fit_zoom,
-//                      max_auto_fit_zoom]; else DEFAULT_ZOOM_LEVEL (11).
-//                      Also 11 when auto_fit has nothing to fit.
-//          - New YAML keys: auto_fit (default true), min_auto_fit_zoom
-//            (default 3), max_auto_fit_zoom (default 14). Undocumented
-//            testing/debug overrides: min_zoom_level (default 1),
-//            max_zoom_level (default 18) -- "max_zoom_level" REPLACES the old
-//            "max_zoom" key (renamed, no alias; "max_zoom" is now ignored).
-//          - BEHAVIOR CHANGE: initial_zoom_level no longer switches off
-//            auto-fit entirely. With it set and no "center", the map now
-//            centers on the middle of the entities (previously zone.home).
-//            Use auto_fit: false for the old behavior.
-//          - One code path for all cases: _computeView() / _applyView(),
-//            replacing _applyAutoFitView() and _fitAroundCenter(). Initial
-//            view is always applied on the ResizeObserver's first firing;
-//            reset-focus is always added and re-applies the same rules with
-//            current positions.
-// v0.1.31: "center" without "initial_zoom_level" now keeps that center and
-//          zooms to fit all tracked entities around it, per explicit
-//          instruction (replaces v0.1.30's fixed zoom 11 for that case):
-//          - center + initial_zoom_level: that center at that zoom.
-//          - center only: new _fitAroundCenter() -- center stays exactly in
-//            the middle; zoom = largest at which a box symmetric around the
-//            center (measured in Web Mercator pixel space) containing every
-//            entity, plus the same 5% padding as auto-fit, fits. No entities
-//            with a position, or all exactly on the center: zoom 11.
-//          - neither: auto-fit, unchanged.
-//          The center-only fit runs on the ResizeObserver's first firing,
-//          like auto-fit, because getBoundsZoom() needs the final container
-//          size. Reset-focus re-runs the same fit with current positions
-//          (_addResetFocusControl() gained an optional resetFn argument).
-// v0.1.30: "center" config can now name an entity, per explicit instruction:
-//            center: person.rob            (short form)
-//            center: { entity: person.rob } (long form)
-//            center: { lat: .., lon: .. }   (fixed coordinates, unchanged)
-//          - The entity's CURRENT position is used at load. It does not need
-//            to be in "entities" (read straight from hass.states), so the
-//            center can be something not drawn on the map.
-//          - An explicit "center" now disables auto-fit, like an explicit
-//            "initial_zoom_level" already did (previously "center" was
-//            silently overridden by auto-fit whenever initial_zoom_level was
-//            absent). Zoom: initial_zoom_level, else 11 (same as the
-//            single-entity auto-fit).
-//          - Reset-focus re-centers on the entity's current position at click
-//            time (it now receives a center getter instead of a fixed value).
-//            The map does NOT follow the entity while it moves.
-//          - Missing entity or no location: falls back to zone.home, with a
-//            console warning.
-// v0.1.29: Fix road shield numbers (and possibly other labels) intermittently
-//          missing on first load, appearing only after a zoom or a manual
-//          window resize. Observed: a small window resize makes them appear
-//          immediately, i.e. the text exists in the tiles and only the first
-//          symbol placement dropped it. Start-up order, per this file: the
-//          ResizeObserver's first firing (and its invalidateSize()) happens
-//          almost immediately after observe(), before tiles, glyphs or the
-//          sprite are loaded; applyShieldColors() then swaps shield images via
-//          updateImage() only after MapLibre's "load" event; nothing
-//          re-measures or re-places symbols after that. Fix, event-driven per
-//          explicit instruction (no timers): on "load", await
-//          applyShieldColors() (a no-op when no shield colors are
-//          configured), then on MapLibre's next "idle" event call
-//          invalidateSize() + maplibreMap.resize() once -- the same effect as
-//          the manual resize that was observed to fix it. triggerRepaint() is
-//          called right after registering the listener because "idle" only
-//          fires following a render, and the map may already be idle.
-//          [Unverified in a live HA dashboard at time of writing -- based on
-//          the observed resize behavior, not a reproduced root cause inside
-//          MapLibre.]
-// v0.1.28: Fixed entity marker pictures blinking continuously. Root cause,
-//          confirmed by reading this file: HA assigns a new "hass" object to
-//          every card whenever ANY entity in the whole instance changes, and
-//          _updateEntityPositions() ran on every one of those assignments
-//          and unconditionally called marker.setIcon(L.divIcon(...)) for
-//          every tracked entity. setIcon() makes Leaflet discard the marker's
-//          DOM element and build a new one, including a new <img>, so the
-//          picture was torn down and reloaded on every state change anywhere
-//          in HA. Per explicit instruction, fixed at the source rather than
-//          only short-circuited inside the update:
-//          - New shouldUpdate(): when only "hass" changed, compares the
-//            previous and new hass.states[id] object for this card's own
-//            tracked entities only (HA replaces a state object only when
-//            that entity changes; unchanged entities keep the same object
-//            reference -- the same comparison HA's own built-in cards use via
-//            hasConfigOrEntityChanged). If none of them changed, returns
-//            false, so Lit skips the whole update cycle (no render, no
-//            updated(), no marker/trail code). Config changes, the first hass
-//            assignment, and the pre-init state always update, unchanged.
-//          - The changed entity ids are handed to _updateEntityPositions(),
-//            which now touches only those entities' markers/trails.
-//          - Within a changed entity, setLatLng() only runs if the position
-//            differs, and setIcon() only runs if the generated marker HTML
-//            differs (new _entityMarkerHtml map). Needed because a person/
-//            device_tracker state object also changes for attribute-only
-//            updates (e.g. gps_accuracy, battery) that don't affect the
-//            marker -- without this, those would still rebuild the <img>.
-// v0.1.27: Renamed config key "zoom" -> "initial_zoom_level", per explicit
-//          instruction. Rename only -- no behavior change. Updated the three
-//          live reads (_initMap()'s hasExplicitZoom check, its setView()
-//          fallback, and its call into _addResetFocusControl()) plus the
-//          v0.1.26 comments that referenced the old name.
-// v0.1.26: Auto-fit initial zoom to entities, per explicit instruction, only
-//          when "initial_zoom_level" is not set in config (an explicit
-//          "initial_zoom_level" config value still wins outright, unchanged):
-//          - 0 or 1 resolved entities -> center on that entity (or the
-//            existing _getCenter() fallback if 0), zoom 11.
-//          - 2+ resolved entities -> L.latLngBounds(points).pad(0.05), fit
-//            to that padded box. 0.05 (5%) confirmed by explicit instruction
-//            this session, deliberately NOT matching HA's own real default
-//            (confirmed against its actual hui-map-card.ts/ha-map.ts source
-//            this session: ha-map.ts's fitMap() defaults to pad: 0.5, i.e.
-//            50%, not the 10% initially recalled -- HA's own default was
-//            rejected as too large per explicit instruction, 5% used
-//            instead).
-//          - Per explicit instruction, this computation must run AFTER the
-//            container's real, final size is known (Leaflet's own
-//            getBoundsZoom(), confirmed by reading Leaflet v1.9.4's actual
-//            source this session, computes zoom from this.getSize() -- the
-//            map's CURRENT pixel size -- so computing it before HA's
-//            dashboard grid settles the card's final width, the same
-//            pre-existing race documented in this file's own v0.0.11 fix,
-//            would risk an incorrect zoom). There is no signal available to
-//            tell "initial grid settling" apart from a later genuine window
-//            resize -- both fire the same ResizeObserver callback -- so per
-//            explicit instruction, the auto-fit now runs once, on that
-//            ResizeObserver's FIRST-ever firing after _initMap() only,
-//            gated by a new this._hasAutoFitted instance flag. Every
-//            subsequent firing (real window resizes) continues to only call
-//            invalidateSize(), unchanged. Per explicit instruction, the map
-//            is visibly at its placeholder fallback view for the brief
-//            window before that first firing; this is accepted as-is, not a
-//            bug to fix.
-//          - Per explicit instruction, auto-fit fires only at initial load
-//            and on the reset-focus control's click, never on a plain
-//            window resize. _addResetFocusControl() is now called from
-//            inside that first-ResizeObserver branch (after the real
-//            initial view is known) instead of synchronously inside
-//            _initMap(), and its stored initialCenter/initialZoom are now
-//            this computed auto-fit view rather than DEFAULT_ZOOM, so
-//            reset-focus reproduces the same auto-fit computation.
-//          - New module-level computeAutoFitEntityPoints() helper reuses
-//            the existing normalizeEntityConfig()/getEntityLatLon() helpers
-//            (unchanged) rather than duplicating entity-resolution logic.
-// v0.1.25: Fixed a real bug in applyLayerOverrides() (present since v0.0.7)
-//          that broke the ENTIRE map, not just the overridden layer, when a
-//          "layers" config override set only "paint" (or only "layout") on
-//          a layer that has no native counterpart key -- e.g. overriding
-//          roads_highway's paint.line-width, since roads_highway has no
-//          "layout" key at all in its generated form. The old code
-//          unconditionally wrote "layout: layer.layout" even when both
-//          sides were undefined, producing an explicit "layout: undefined"
-//          on the layer object -- a present-but-invalid key, which
-//          MapLibre's style validator rejects for the WHOLE style ("layers
-//          [N].layout: object expected, undefined found"), not just that
-//          layer. Root cause confirmed against a live error this session.
-//          Fixed: paint/layout are now only set on the merged layer when
-//          either the source layer or the override actually has one.
-// v0.1.24: Two fixes, per explicit instruction:
-//          1) Reset-focus button icon (added v0.1.23) was pinned to the top
-//             of its 26x26 leaflet-bar button box instead of centered:
-//             leaflet.css centers "leaflet-bar a" text via line-height,
-//             which does not vertically center a display:block SVG. Fixed
-//             by making the link a flex container (align-items/justify-
-//             content: center) and sizing the icon up from 16px to 22px to
-//             better fill the button.
-//          2) New "max_zoom" config key (default 18, Leaflet's own default
-//             max), passed as Leaflet's real maxZoom map option. Fixes an
-//             unconstrained zoom reaching level 42 and crashing the
-//             browser -- root cause confirmed this session: neither our
-//             code nor maplibre-gl-leaflet (checked its real source, no
-//             maxZoom handling exists in it at all) set any zoom ceiling,
-//             so Leaflet had nothing constraining it. maplibre-gl-leaflet
-//             purely mirrors whatever zoom Leaflet is at onto the MapLibre
-//             canvas, so capping Leaflet's own maxZoom is sufficient -- no
-//             separate MapLibre-side cap needed.
-// v0.1.23: Two additions, per explicit instruction:
-//          1) "Reset focus" Leaflet control (topleft, below the built-in
-//             zoom +/- control), icon matching HA's own reset-focus button
-//             (mdiImageFilterCenterFocus, confirmed against HA's real
-//             hui-map-card.ts source this session). Deliberately does NOT
-//             replicate HA's own behavior (HA's version fits bounds to
-//             current entity positions) -- ours instead returns to the same
-//             center/zoom _initMap() computes on initial load (this._config
-//             .center or HA's zone.home, at this._config.zoom ??
-//             DEFAULT_ZOOM), i.e. matching what a hard page reload (Ctrl+F5)
-//             would show, per explicit instruction that this is the desired
-//             behavior, not HA's fit-to-entities.
-//          2) New "show_zoom_level" boolean config key (default false).
-//             When true, adds a small Leaflet control (bottomleft) showing
-//             the current integer zoom level, updated live on the map's own
-//             "zoomend" event.
-// v0.1.22: Two changes, per explicit instruction:
-//          1) Renamed config keys "theme" -> "flavor" and "palette" ->
-//             "seasoning", to match @protomaps/basemaps' own real
-//             vocabulary (Flavor is the library's actual type/concept name,
-//             confirmed against its source this session) instead of names
-//             we invented. No backward-compat aliases -- card is unreleased,
-//             explicitly not needed. Purely a rename; behavior unchanged.
-//             "layers" key is unchanged (already a correct, complete,
-//             untranslated pass-through, confirmed by inspecting real
-//             generated layer objects this session).
-//          2) Trail-point hover tooltip text (entity name + timestamp,
-//             added in v0.1.21) is now center-aligned instead of Leaflet's
-//             default left alignment.
-// v0.1.21: Hover tooltips on trail points, showing entity name + timestamp.
-//          Matches HA's native map card exactly (src/components/map/
-//          ha-map.ts, confirmed this session): L.circleMarker.bindTooltip(),
-//          default hover trigger (not a click popup), direction: 'top',
-//          content "<friendly_name><br><formatted time>".
-//          - fetchEntityTrailHistory() now returns {lat, lon, time} objects
-//            instead of bare [lat, lon] tuples, sourcing "time" from each
-//            history entry's last_changed. Live-appended points (from
-//            _updateEntityPositions) source "time" from the live state
-//            object's last_changed the same way. All trail point storage/
-//            comparison logic (_entityTrailPoints, dedupe check in
-//            _updateEntityPositions, buildTrailLayerGroup) updated to carry
-//            the new shape.
-//          - Date format replicates HA's own three-way branch exactly, on
-//            explicit instruction to match native HA behavior rather than
-//            use a fixed format: hours_to_show > 144 -> full date+time;
-//            else point is today -> time with seconds only; else -> weekday
-//            + time. Implemented via Intl.DateTimeFormat.
-//          - 12h/24h choice ported from HA's real useAmPm() (src/common/
-//            datetime/use_am_pm.ts, confirmed this session): reads
-//            hass.locale.time_format or hass.locale.language (that
-//            function's TimeFormat.language/system branch tests a fixed
-//            10PM date string against the locale's own toLocaleString());
-//            falls back to hass.locale.time_format === 'am_pm' directly
-//            otherwise. hass.locale is confirmed part of the standard
-//            documented custom-card HomeAssistant interface. Time zone
-//            sourced from hass.config.time_zone.
-//          - NOTE: this deliberately replicates HA's NATIVE map card
-//            formatting logic, not chrono-map-card's -- confirmed this
-//            session that chrono-map-card's own tooltip formatting does not
-//            correctly follow the user's HA profile time-format setting,
-//            while HA's native map card does.
-// v0.1.20: Trail fade styling + per-entity/global trail config. Matches HA's
-//          native map card trail rendering (src/components/map/ha-map.ts,
-//          hui-map-card.ts), confirmed against its real formula:
-//          - Trail is no longer one flat-opacity L.polyline per entity. It
-//            is now an L.layerGroup per entity containing one L.polyline per
-//            consecutive point pair (N points -> N-1 segments) plus one
-//            L.circleMarker per point, oldest = most faded, newest = most
-//            opaque.
-//          - Opacity formula matches HA exactly: gradualOpacity = 0.8,
-//            baseOpacity = 0.2, opacityStep = gradualOpacity /
-//            (points.length - 2), opacity = baseOpacity + segmentIndex *
-//            opacityStep. Floor is 20% (HA's own default), NOT the 10%
-//            floor discussed earlier in this project -- corrected per
-//            explicit instruction this session. 2-point trail (1 segment)
-//            is a documented edge case: uses 100% opacity, no division.
-//          - Live updates (_updateEntityPositions): a new point means every
-//            existing segment's correct opacity has shifted, since the
-//            formula's denominator is the total point count. There is no
-//            valid append-only path. Each update now fully destroys and
-//            rebuilds the entity's trail layerGroup from the complete
-//            stored point array.
-//          - New "entities" list entries may now be a bare entity-id string
-//            (unchanged) OR an object: { entity, color, history_line_color,
-//            history_line_width, history_dot_radius, use_base_entity_only }.
-//          - New root-level optional config keys: history_line_color,
-//            history_line_width, history_dot_radius -- global defaults,
-//            overridable per-entity. Precedence: per-entity value -> root
-//            default -> hardcoded fallback (color '#4676d3', width 3,
-//            radius 3).
-//          - "color" (per-entity) is the marker/circle color; "history_line_
-//            color" (per-entity or root) is the trail-specific color,
-//            defaulting to that entity's "color" if unset.
-//          - "use_base_entity_only" is accepted on a per-entity object for
-//            config-schema compatibility with chrono-map-card but is
-//            currently a no-op: this card's history fetch (hass.callApi
-//            against /api/history/period) is architecturally different from
-//            chrono-map-card's HaHistoryService/websocket subscription
-//            model where this flag has a verified effect, and no equivalent
-//            behavior has been verified for this card's fetch path.
-//          - "hours_to_show" (numeric, HA-native key) is unchanged and
-//            remains the only history-duration config key -- confirmed
-//            against HA's real hui-map-card.ts source this session that HA
-//            itself has no relative-time-string key.
-// v0.0.11: Two fixes, confirmed via live shadow-DOM inspection rather than
-//          guessed:
-//          1) Map only filled the left half of the card, rest gray. Cause:
-//             neither Leaflet nor MapLibre were ever told to resize after
-//             initial mount, and HA's dashboard grid can settle the card's
-//             final width AFTER _initMap() already ran with an earlier,
-//             narrower measurement. Fix: a ResizeObserver on the map
-//             container now calls this._leafletMap.invalidateSize(), which
-//             maplibre-gl-leaflet propagates to the underlying MapLibre
-//             canvas automatically.
-//          2) Entity marker pictures rendered at their raw natural size
-//             (measured 512x516.75px instead of 36x36) despite matching
-//             CSS rules existing in an injected <style> tag. Confirmed via
-//             getComputedStyle() that HA's own frontend/card-mod styles
-//             were overriding the global stylesheet's rules entirely
-//             (display/overflow/border-radius/object-fit all came back as
-//             unstyled defaults despite the selector matching). Fix:
-//             dropped the injected global <style> tag approach and set
-//             marker sizing directly as inline styles instead, which beat
-//             the same cascade that was overriding the external sheet.
-// v0.0.10: Fix map being empty (no tiles, no zoom controls, nothing) on the
-//          live dashboard while working correctly in the card editor's own
-//          preview. Root cause, confirmed via shadow-DOM inspection: the
-//          editor preview and the live dashboard are separate connect/
-//          disconnect cycles of the SAME element instance in HA's
-//          frontend. Lit's firstUpdated() fires only once ever, so it
-//          initialized the map for the editor preview; when the editor
-//          closed, disconnectedCallback() -> _teardownMap() ran (setting
-//          _leafletMap back to null) as designed, but nothing ever
-//          re-initialized the map when the card reconnected for the real
-//          dashboard view. Fix: added connectedCallback(), which
-//          re-runs _initMap()/_initEntities() whenever the card reconnects
-//          and _leafletMap is null, waiting on updateComplete first since
-//          connectedCallback() fires before Lit's own re-render has put
-//          the <div id="map"> back in the DOM.
-// v0.0.9: Added entity tracking. New "entities" config key (explicit list
-//         of person./device_tracker. entity ids) draws one circular marker
-//         per entity, HA-native style: entity_picture if the state has one
-//         (resolved to an absolute URL via hass.hassUrl(), confirmed as
-//         the standard method exposed to custom cards), else initials from
-//         the friendly name (matches HA's own hui-map-card/ha-map fallback
-//         behavior, confirmed by reading its source). New "hours_to_show"
-//         config key (name matches HA's built-in Map card, 0 = markers
-//         only, default 0) draws a trail per entity by querying HA's own
-//         /api/history/period REST endpoint (via hass.callApi, with
-//         filter_entity_id and end_time, WITHOUT minimal_response/
-//         no_attributes since lat/lon are needed from attributes) once on
-//         load, then appending live hass updates to the same trail without
-//         re-fetching. Entities/trails are plain Leaflet markers/polylines
-//         (not MapLibre layers), per the original design: Leaflet drives
-//         all interaction, MapLibre only renders the basemap.
-// v0.0.8: Added palette.shield_fill / palette.shield_border config keys to
-//         recolor highway route-number shield badges (e.g. "A12"). These
-//         are NOT Flavor properties -- confirmed via TypeDoc that Flavor
-//         has no shield_* keys, and via a local @protomaps/basemaps run
-//         that the shield layer draws them as a sprite icon-image, not a
-//         paint color. Fix: after the MapLibre map's "load" event, fetch
-//         the active theme's real sprite sheet (PNG+JSON) from the same
-//         "sprite" URL already in the style, recolor every shield entry
-//         (generic_shield-1..5char, NL:S-road-1..5char, US:I-1..5char) by
-//         blending each pixel between the sprite's own fill/border
-//         reference colors (white/gray for light, black/gray for dark --
-//         confirmed by sampling both sprite sheets) and the requested
-//         colors, preserving anti-aliased edges, then replace each entry
-//         via the real maplibregl.Map's updateImage() (confirmed via a
-//         headless-browser test against the actual library: addImage() on
-//         an existing name fires a non-fatal error event, updateImage() is
-//         the correct replace call, and it requires the replacement image
-//         to match the ORIGINAL entry's exact width/height, which this
-//         preserves from the sprite JSON). Reached the real maplibregl.Map
-//         instance via maplibre-gl-leaflet's public getMaplibreMap()
-//         method (confirmed present in its dist build), not a private
-//         field. No-op (no fetch, no recolor) when neither palette key is
-//         set, so existing configs are unaffected.
-// v0.0.7: Added "layers" config key: an object keyed by generated layer id
-//         (e.g. "roads_shields", "roads_label_major") whose paint/layout
-//         sub-objects are shallow-merged onto that layer's own paint/layout
-//         after layers() generates the style. Covers styling not exposed
-//         through Flavor/"palette" -- confirmed via a local install of
-//         @protomaps/basemaps@5.7.2 that e.g. the highway route-number
-//         shield's text color (roads_shields, paint['text-color']) and any
-//         label's font size (layout['text-size']) are baked into the
-//         generated layers directly, not Flavor properties. NOTE: the
-//         shield's background/border shape is a sprite icon-image, not a
-//         paint color, so it is NOT reachable via this mechanism -- would
-//         need a self-hosted, modified sprite sheet.
-// v0.0.6: Fix missing street/place labels and icons: the style object was
-//         missing the required "glyphs" and "sprite" URLs (confirmed via
-//         docs.protomaps.com/basemaps/maplibre's example style -- without
-//         glyphs, MapLibre silently renders no text layers at all, no
-//         error). Added Protomaps' free hosted basemaps-assets glyphs/
-//         sprite URLs, and the {lang:'en'} options argument to layers()
-//         per that same example. Added "palette" config key: a flat
-//         object of Flavor key overrides spread onto namedFlavor(theme)
-//         before being passed to layers(), e.g. palette: {highway: "#f60"}.
-// v0.0.5: Replace the single hardcoded debug fill layer with real basemap
-//         styling via @protomaps/basemaps. Added "theme" config key
-//         (default 'light') selecting namedFlavor('light'|'dark'|...) --
-//         switching happens at map init only, not live. Switched
-//         DEFAULT_PMTILES_URL from the US ZCTA test dataset to the
-//         self-hosted europe.pmtiles regional extract.
-// v0.0.4: Fix "URL scheme pmtiles is not supported" despite addProtocol()
-//         succeeding. Root cause: leaflet-maplibre-gl's ESM build imports
-//         its own bare "maplibre-gl"/"leaflet" specifiers, which jsdelivr's
-//         +esm resolved to a SEPARATE module instance from the one we
-//         import and register the pmtiles:// protocol on -- so the map it
-//         actually constructs internally never sees our addProtocol() call.
-//         Switched leaflet/maplibre-gl/maplibre-gl-leaflet/pmtiles imports
-//         to esm.sh with a ?deps= pin on the maplibre-gl-leaflet import,
-//         forcing all of them to resolve to one shared instance. Removed
-//         diagnostic console.log lines from the 0.0.3.x debug builds.
-// v0.0.3: Version bump only (0.0.2 tag/release already consumed resolving
-//         the earlier workflow/publish issue) -- no code changes beyond
-//         the version number itself.
-// v0.0.2: Fix "does not provide an export named 'default'" console error.
-//         maplibre-gl@6.10.0's ESM build (+esm on jsdelivr) does not expose
-//         a default export; switched to a namespace import
-//         (import * as maplibregl) which works regardless of whether a
-//         default export exists.
-// v0.0.1: Initial scaffold. Renders a MapLibre GL vector layer (via
-//         maplibre-gl-leaflet) reading a PMTiles archive over HTTP range
-//         requests, hosted inside a plain Leaflet map. Centered on HA's
-//         Home zone coordinates. Points at Protomaps' public sample
-//         dataset (US ZIP code area polygons) purely to prove the render
-//         pipeline end-to-end before any real regional PMTiles file or
-//         @protomaps/basemaps styling is introduced. No editor, no
-//         entity tracking yet -- YAML-only config, one required key.
+// v0.2.46: Compacted the version history and code comments (full history in 0.2.45 and older).
+//          Fixed misplaced comments of _addZoomButtonsControl()/_addCenterControl(). No code changes.
+// v0.2.45: Zoom preset buttons: show_zoom_buttons + zoom_buttons (levels), top right. A click zooms,
+//          keeping the center; current level highlighted in disabled colors; invalid levels left out.
+// v0.2.44: Lat/lon display moved to the bottom center (plain element, not a control); its text can
+//          be selected and copied, since clicks on it no longer start a map drag or zoom.
+// v0.2.43: New "cache" key (default true); cache: false fetches the style file with cache 'no-store',
+//          so it always comes fresh from the server. Affects the style file only.
+// v0.2.42: New "show_lat_lon" key: map center as "lat: .. lon: .." (4 decimals), updated on "move",
+//          longitude wrapped to -180..180.
+// v0.2.41: New "controls" key (background, color, border, hover_background, disabled_background,
+//          disabled_color) for the map controls, as a shadow-root stylesheet; style file, then config.
+// v0.2.40: "flavor" can be a .yaml/.yml/.json style file (flavor, seasoning, layers). Order: built-in
+//          flavor, style file, card config, merged per key (also pois/landcover); style built async.
+// v0.1.34: Fix sparse history trails for "person": /api/history/period is now called with
+//          significant_changes_only=0, so GPS-only updates are included.
+// v0.1.33: Two or more entities at exactly the same spot now count as a fit (max_auto_fit_zoom);
+//          only a single entity on the center gets zoom 11.
+// v0.1.32: Zoom/center rework: center and zoom decoupled, auto_fit fills in what isn't set; new keys
+//          auto_fit, min/max_auto_fit_zoom, (undocumented) min/max_zoom_level replacing max_zoom.
+// v0.1.31: "center" without initial_zoom_level keeps that center and zooms to fit all entities
+//          around it (symmetric box, 5% padding).
+// v0.1.30: "center" can name an entity (its current position; need not be in "entities"); a missing
+//          entity falls back to zone.home with a warning.
+// v0.1.29: Fix road shield numbers missing on first load: after "load" and the shield recolor, one
+//          invalidateSize() + resize() on the next MapLibre "idle".
+// v0.1.28: Fix blinking marker pictures: shouldUpdate() skips updates unless a tracked entity changed;
+//          setLatLng()/setIcon() only when the position/HTML actually changed.
+// v0.1.27: Renamed config key "zoom" to "initial_zoom_level"; no behavior change.
+// v0.1.26: Without initial_zoom_level the initial zoom fits all entities (5% padding), computed once
+//          on the ResizeObserver's first firing; reset-focus repeats the same fit.
+// v0.1.25: Fix: a "layers" override with only paint (or layout) broke the whole map by setting
+//          "layout: undefined"; paint/layout are now only set when one side has them.
+// v0.1.24: Reset-focus icon centered (flex, 22px); new "max_zoom" key (default 18) fixes zooming to
+//          level 42 and crashing the browser.
+// v0.1.23: Reset-focus button (below +/-) returning to the initial view; new "show_zoom_level" key
+//          showing the current zoom bottom left.
+// v0.1.22: Renamed "theme" to "flavor" and "palette" to "seasoning" (Protomaps' own terms); trail
+//          tooltip text centered.
+// v0.1.21: Hover tooltips on trail points (entity name + time), formatted as HA's native map card,
+//          including 12h/24h from the HA profile.
+// v0.1.20: Trail fade with HA's formula (segments + dots, 20% floor); entities can be objects with
+//          color and history_* keys; root history_* defaults; use_base_entity_only accepted, no-op.
+// v0.0.11: Fix map filling only half the card (ResizeObserver + invalidateSize()); marker pictures
+//          sized with inline styles because HA's CSS overrode the injected stylesheet.
+// v0.0.10: Fix empty map on the dashboard after the editor preview: connectedCallback() re-initializes
+//          the map when the element reconnects.
+// v0.0.9: Entity tracking: "entities" markers (picture or initials) and "hours_to_show" trails from
+//         /api/history/period, updated live.
+// v0.0.8: palette.shield_fill/shield_border: recolors the road shield sprites via updateImage() after
+//         "load", preserving anti-aliased edges.
+// v0.0.7: New "layers" key: paint/layout overrides per generated layer id.
+// v0.0.6: Fix missing labels/icons: added glyphs and sprite URLs; new "palette" key for Flavor overrides.
+// v0.0.5: Real basemap styling with @protomaps/basemaps; new "theme" key (default light).
+// v0.0.4: Fix "URL scheme pmtiles is not supported": imports moved to esm.sh with a ?deps= pin, so all
+//         use one maplibre-gl instance.
+// v0.0.3: Version bump only.
+// v0.0.2: Fix "no default export" error: maplibre-gl imported as a namespace.
+// v0.0.1: Initial scaffold: MapLibre vector layer from a PMTiles archive inside a Leaflet map, centered
+//         on zone.home.
 
 // --- Console log ---------------------------------------------------------------
 console.info(
@@ -526,8 +86,7 @@ console.info(
 
 // --- Constants ---------------------------------------------------------------
 
-// Self-hosted regional extract (Europe, z0-14), served from this HA
-// instance's www/ folder via HTTP range requests.
+// Self-hosted map file, served from HA's www/ folder via HTTP range requests.
 const DEFAULT_PMTILES_URL = '/local/europe.pmtiles';
 
 const DEFAULT_MAP_HEIGHT = '300px';
@@ -539,45 +98,26 @@ const DEFAULT_MIN_AUTO_FIT_ZOOM  = 3;  // min_auto_fit_zoom default
 const DEFAULT_MAX_AUTO_FIT_ZOOM  = 14; // max_auto_fit_zoom default
 const DEFAULT_THEME      = 'light';
 
-// The pmtiles:// protocol must only ever be registered once per page,
-// regardless of how many chrono-pmtiles-card instances get created or
-// destroyed as the user navigates dashboards. A module-scope guard
-// (rather than an instance flag) ensures this holds even across multiple
-// card instances.
+// pmtiles:// may only be registered once per page, across all card instances.
 let protocolRegistered = false;
 function ensurePmtilesProtocol() {
   if (protocolRegistered) return;
-  // Known v6 CDN-ESM bug (maplibre/maplibre-gl-js #8459, duplicate of #8018):
-  // the worker script's auto-detected URL can fail to load. Explicit
-  // setWorkerUrl() bypasses the broken auto-detection.
+  // Explicit worker URL: works around the v6 CDN-ESM worker bug (maplibre-gl-js #8459).
   maplibregl.setWorkerUrl('https://esm.sh/maplibre-gl@6.10.0/dist/maplibre-gl-worker.js');
   const protocol = new Protocol();
   maplibregl.addProtocol('pmtiles', protocol.tile);
   protocolRegistered = true;
 }
 
-// Shallow-merges config-supplied paint/layout overrides, keyed by generated
-// layer id, onto the layer array returned by layers(). Layers not named in
-// overrides are returned unchanged; a named layer not present in the
-// generated array is silently ignored (id typo, or theme doesn't produce
-// it) rather than throwing, since this only ever runs against generated
-// style layers, not user-authored ones.
+// Merges "layers" paint/layout overrides, keyed by layer id, onto the generated layers.
+// Layers not named are unchanged; unknown ids are ignored.
 function applyLayerOverrides(generatedLayers, overrides) {
   if (!overrides) return generatedLayers;
   return generatedLayers.map((layer) => {
     const override = overrides[layer.id];
     if (!override) return layer;
     const merged = { ...layer };
-    // Only set paint/layout when the merged result should actually have
-    // one -- i.e. the source layer already had it, or the override
-    // supplies it. Unconditionally assigning e.g. "layout: layer.layout"
-    // when neither side has a "layout" (a plain line/fill layer, which
-    // legitimately has no "layout" key at all, like roads_highway) sets an
-    // explicit "layout: undefined" on the object -- a real, present key
-    // with an invalid value, which MapLibre's style validator rejects
-    // ("layers[N].layout: object expected, undefined found"), aborting the
-    // ENTIRE style, not just that one layer. Confirmed against a live error
-    // this session.
+    // Only set paint/layout if one side has it: "layout: undefined" makes MapLibre reject the whole style.
     if (layer.paint || override.paint) {
       merged.paint = { ...layer.paint, ...override.paint };
     }
@@ -594,18 +134,14 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-// True when "flavor" names a style file rather than a built-in flavor.
-// Query string / hash are ignored when checking the extension.
+// True when "flavor" names a style file (.yaml/.yml/.json; query string and hash ignored).
 function isStyleFileUrl(flavor) {
   if (typeof flavor !== 'string') return false;
   return /\.(ya?ml|json)$/i.test(flavor.split(/[?#]/)[0]);
 }
 
-// Fetches and parses a style file; the extension picks the parser. Returns
-// null when the file is missing, cannot be parsed, or does not contain an
-// object -- the caller then handles it as if "flavor" were not set.
-// v0.2.43: useCache false -> cache: 'no-store' (always fresh from the
-// server, never stored in the browser cache).
+// Fetches and parses a style file (parser by extension). Returns null when missing, unparseable
+// or not an object. useCache false: fetched with cache 'no-store' (always fresh).
 async function loadStyleFile(url, useCache = true) {
   try {
     const response = await fetch(url, useCache ? undefined : { cache: 'no-store' });
@@ -627,9 +163,7 @@ async function loadStyleFile(url, useCache = true) {
   }
 }
 
-// Applies seasoning onto a flavor (or onto other seasoning), key by key.
-// Groups (pois, landcover) are merged one level deeper, so overriding one
-// element keeps the rest of that group.
+// Applies seasoning key by key; groups (pois, landcover) are merged one level deeper.
 function mergeSeasoning(base, override) {
   if (!isPlainObject(override)) return { ...base };
   const merged = { ...base };
@@ -641,10 +175,7 @@ function mergeSeasoning(base, override) {
   return merged;
 }
 
-// Merges two "layers" override maps (style file, then card config), per
-// layer id and then per individual paint/layout property; "override" wins.
-// paint/layout are only set when one side has them (see
-// applyLayerOverrides() on why an undefined "layout" must never be set).
+// Merges style-file and card-config "layers" per layer id and per paint/layout property; config wins.
 function mergeLayerOverrides(baseLayers, overrideLayers) {
   const merged = isPlainObject(baseLayers) ? { ...baseLayers } : {};
   if (!isPlainObject(overrideLayers)) return merged;
@@ -662,9 +193,7 @@ function mergeLayerOverrides(baseLayers, overrideLayers) {
   return merged;
 }
 
-// Resolves the effective style from the card config, loading the style file
-// if "flavor" names one. Order: built-in flavor, then the style file's
-// seasoning/layers, then the card config's own seasoning/layers.
+// Resolves the effective style: built-in flavor, then style file, then card config (per key).
 async function resolveStyle(config) {
   let file = null;
   let flavorName = config.flavor;
@@ -684,14 +213,8 @@ async function resolveStyle(config) {
   };
 }
 
-// v0.2.41: builds CSS for the map controls from the "controls" keys. Only
-// keys that are set produce a declaration; everything else keeps Leaflet's
-// (or the card's) own look. Selectors (.map-container .leaflet-control
-// .leaflet-bar ...) are more specific than every leaflet.css rule they
-// override, including ".leaflet-bar a.leaflet-disabled", so the result does
-// not depend on which stylesheet loads last. The disabled rule comes after
-// the hover rule (same specificity), as in leaflet.css, so disabled wins.
-// Without disabled_background, a disabled button keeps "background".
+// Builds CSS for the map controls from "controls"; only keys that are set produce declarations.
+// Selectors outrank every leaflet.css rule they override, so load order doesn't matter.
 function buildControlsCss(controls) {
   const rule = (selector, declarations) => {
     const body = declarations
@@ -717,8 +240,7 @@ function buildControlsCss(controls) {
       ['background', controls.background],
       ['color', controls.color],
     ]),
-    // v0.2.45: zoom preset buttons -- hover, and the highlighted button of
-    // the current zoom level (disabled colors, as for Leaflet's buttons).
+    // Zoom preset buttons: hover, and the highlighted button of the current zoom level.
     rule('.map-container .chrono-zoom-button:hover', [
       ['background', controls.hover_background],
     ]),
@@ -729,9 +251,7 @@ function buildControlsCss(controls) {
   ].filter(Boolean).join('\n');
 }
 
-// Shield sprite icon names covered by palette.shield_fill/shield_border.
-// Confirmed exhaustive against Protomaps' hosted v4 sprite JSON -- no other
-// shield-type entries exist in either the light or dark sprite sheet.
+// Shield sprite names recolored by shield_fill/shield_border (exhaustive for the v4 sprites).
 const SHIELD_SPRITE_NAMES = [
   'generic_shield-1char', 'generic_shield-2char', 'generic_shield-3char',
   'generic_shield-4char', 'generic_shield-5char',
@@ -740,10 +260,7 @@ const SHIELD_SPRITE_NAMES = [
   'US:I-1char', 'US:I-2char', 'US:I-3char', 'US:I-4char', 'US:I-5char',
 ];
 
-// Each shield sprite is drawn with exactly two flat colors plus anti-aliased
-// blend pixels between them -- confirmed by sampling actual pixel data from
-// Protomaps' hosted sprite sheets: white fill / gray(154,154,154) border in
-// the light theme, black fill / gray(101,101,101) border in dark.
+// Shield sprite reference colors (sampled): fill/border of the light and dark sprite sheets.
 const SHIELD_REFERENCE_COLORS = {
   light: { fill: [255, 255, 255], border: [154, 154, 154] },
   dark:  { fill: [0, 0, 0],       border: [101, 101, 101] },
@@ -754,12 +271,8 @@ function hexToRgb(hex) {
   return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
 }
 
-// Recolors one shield sprite's pixel data in place. Blends each pixel
-// between the target fill/border colors using the same proportion it sits
-// between the sprite's own reference fill/border colors (solved per
-// channel, averaged), so anti-aliased edges stay smooth instead of
-// becoming jagged. Fully transparent pixels are left untouched. Verified
-// against real sprite pixel data (see v0.0.8 version history).
+// Recolors one shield sprite's pixels in place, blending between the new fill/border colors in
+// the same proportion as between the reference colors, so anti-aliased edges stay smooth.
 function recolorShieldPixels(data, refFill, refBorder, newFill, newBorder) {
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3];
@@ -778,15 +291,8 @@ function recolorShieldPixels(data, refFill, refBorder, newFill, newBorder) {
   }
 }
 
-// Fetches the active theme's real sprite sheet, recolors every shield
-// entry's fill/border pixels per palette.shield_fill/shield_border, and
-// replaces them on the live map via updateImage(). No-op if neither key is
-// set. Must run after the map's "load" event: the sprite has to already be
-// loaded, both for MapLibre's own use and so updateImage()'s same-
-// dimensions requirement has an existing image to match. Fetches the same
-// @1x/@2x variant MapLibre itself selected (devicePixelRatio > 1 -- matches
-// MapLibre's own load_sprite.ts logic), since updateImage() requires the
-// replacement to match the currently loaded image's exact width/height.
+// Recolors all shield sprites per shield_fill/shield_border via updateImage(); no-op if neither set.
+// Must run after MapLibre's "load"; uses the @1x/@2x sprite MapLibre loaded (same size required).
 async function applyShieldColors(maplibreMap, spriteUrl, theme, paletteConfig) {
   const fillHex = paletteConfig?.shield_fill;
   const borderHex = paletteConfig?.shield_border;
@@ -823,13 +329,8 @@ async function applyShieldColors(maplibreMap, spriteUrl, theme, paletteConfig) {
   }
 }
 
-// Builds the small HTML shown inside each entity's circular Leaflet marker:
-// the entity_picture image if the state has one, else initials from the
-// friendly name -- matches HA's own hui-map-card/ha-map fallback behavior.
-// Sizing/shape is set as INLINE styles rather than a class + injected
-// stylesheet: confirmed via getComputedStyle() that HA's own frontend/
-// card-mod CSS overrides an injected global <style> tag's rules entirely
-// (see v0.0.11 version history) -- inline styles beat that same cascade.
+// Marker HTML: entity_picture if present, else initials (as HA's own map card). Inline styles,
+// because HA's CSS overrides an injected stylesheet (v0.0.11).
 const MARKER_WRAPPER_STYLE = 'width:100%;height:100%;border-radius:50%;border:2px solid #ffffff;box-shadow:0 1px 4px rgba(0,0,0,0.4);background:#4676d3;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#ffffff;font:bold 11px sans-serif;box-sizing:border-box;';
 const MARKER_IMG_STYLE = 'width:100%;height:100%;object-fit:cover;display:block;';
 
@@ -851,45 +352,26 @@ function getEntityLatLon(stateObj) {
   return [lat, lon];
 }
 
-// Same as getEntityLatLon, but also carries the state's last_changed
-// timestamp, for trail-point hover tooltips (see buildTrailLayerGroup).
+// Same as getEntityLatLon, plus last_changed for the trail-point tooltip.
 function getEntityTrailPoint(stateObj) {
   const latLon = getEntityLatLon(stateObj);
   if (!latLon) return null;
   return { lat: latLon[0], lon: latLon[1], time: stateObj.last_changed };
 }
 
-// Fetches one entity's position history over the last `hoursToShow` hours
-// via HA's own /api/history/period REST endpoint (same endpoint and
-// "hours_to_show" naming as HA's built-in Map card). Deliberately omits
-// minimal_response/no_attributes since latitude/longitude live in each
-// state's attributes, not in the bare state string. Returns {lat, lon, time}
-// objects (time from each history entry's last_changed), not bare
-// [lat, lon] tuples, so trail points can show a timestamp on hover.
+// Fetches one entity's position history over the last hoursToShow hours (/api/history/period).
+// Needs attributes (lat/lon), so no minimal_response/no_attributes. Returns {lat, lon, time}.
 async function fetchEntityTrailHistory(hass, entityId, hoursToShow) {
   const end = new Date();
   const start = new Date(end.getTime() - hoursToShow * 60 * 60 * 1000);
-  // v0.1.34: significant_changes_only=0 is required. The endpoint defaults
-  // to significant changes only (HA core history/__init__.py:
-  // query.get("significant_changes_only", "1") != "0"), which for any domain
-  // outside the recorder's SIGNIFICANT_DOMAINS (climate, device_tracker,
-  // humidifier, thermostat, water_heater) -- including "person" -- drops
-  // attribute-only updates, i.e. every GPS position change that isn't also a
-  // state change (home/not_home/zone). That left trails with only a few
-  // points connected by long straight lines.
+  // significant_changes_only=0: otherwise GPS-only updates of "person" are dropped (v0.1.34).
   const path = `history/period/${start.toISOString()}?filter_entity_id=${encodeURIComponent(entityId)}&end_time=${encodeURIComponent(end.toISOString())}&significant_changes_only=0`;
   const result = await hass.callApi('GET', path);
   const states = result?.[0] ?? [];
   return states.map(getEntityTrailPoint).filter(Boolean);
 }
 
-// Ported from HA's real useAmPm() (src/common/datetime/use_am_pm.ts,
-// confirmed this session). Determines 12h vs 24h display from the user's HA
-// profile locale settings, not from a fixed choice: if time_format is
-// "language" or "system", it tests a fixed 22:00 date string against the
-// locale's own toLocaleString() output and checks for "10" (12-hour clocks
-// show "10", 24-hour clocks show "22"); otherwise it returns whether
-// time_format is explicitly "am_pm".
+// Port of HA's useAmPm(): 12h vs 24h from the user's HA profile locale settings.
 function useAmPm(locale) {
   const timeFormat = locale?.time_format;
   if (timeFormat === 'language' || timeFormat === 'system') {
@@ -900,14 +382,8 @@ function useAmPm(locale) {
   return timeFormat === 'am_pm';
 }
 
-// Formats one trail point's timestamp for its hover tooltip, replicating
-// HA's native map card three-way branch exactly (src/components/map/
-// ha-map.ts, confirmed this session):
-// - hoursToShow > 144 (trail spans more than 6 days): full date + time.
-// - else point's timestamp is today: time with seconds, no date.
-// - else: weekday + time (no seconds).
-// hourCycle in all three follows useAmPm(); time zone from
-// hass.config.time_zone.
+// Formats a trail point's time as HA's map card: > 144 h full date + time, today time with
+// seconds, else weekday + time. 12h/24h per useAmPm(), time zone from hass.config.
 function formatTrailPointTime(hass, timestamp, hoursToShow) {
   const date = new Date(timestamp);
   const locale = hass?.locale;
@@ -946,10 +422,7 @@ function formatTrailPointTime(hass, timestamp, hoursToShow) {
   }).format(date);
 }
 
-// Normalizes one "entities" config list entry into a plain object, since an
-// entry may be a bare entity-id string (unchanged since v0.0.9) or an
-// object with entity/color/history_* overrides (new in v0.1.20, schema
-// matched to chrono-map-card's "entities" list where relevant).
+// Normalizes an "entities" entry (entity-id string or object) into an object.
 function normalizeEntityConfig(entry) {
   if (typeof entry === 'string') {
     return { entity: entry };
@@ -957,11 +430,7 @@ function normalizeEntityConfig(entry) {
   return entry ?? {};
 }
 
-// Resolves [lat, lon] pairs for every configured entity that currently has a
-// known position, for the auto-fit-initial-zoom feature (v0.1.26). Reuses
-// normalizeEntityConfig()/getEntityLatLon() rather than duplicating entity-
-// resolution logic. Entities with no matching state, or no lat/lon on that
-// state, are silently skipped (same behavior as _initEntities()).
+// [lat, lon] of every configured entity with a known position, for auto-fit; others are skipped.
 function computeAutoFitEntityPoints(hass, entityEntries) {
   const points = [];
   for (const rawEntry of entityEntries ?? []) {
@@ -973,12 +442,8 @@ function computeAutoFitEntityPoints(hass, entityEntries) {
   return points;
 }
 
-// Resolves the three trail-styling values for one entity, applying the
-// documented precedence: per-entity value -> root-level default -> hardcoded
-// fallback. "history_line_color" additionally falls back to the entity's
-// own marker "color" before the hardcoded fallback, matching chrono-map-
-// card's EntityConfig behavior (historyLineColor defaults to the entity's
-// own color, confirmed this session by reading its source).
+// Trail style per entity: per-entity value, then root default, then fallback. history_line_color
+// also falls back to the entity's "color" (as chrono-map-card).
 function resolveTrailStyle(entityConfig, rootConfig, markerColor) {
   const color =
     entityConfig.history_line_color ??
@@ -996,25 +461,9 @@ function resolveTrailStyle(entityConfig, rootConfig, markerColor) {
   return { color, width, radius };
 }
 
-// Builds one entity's full trail as an L.layerGroup: one L.polyline per
-// consecutive point pair plus one L.circleMarker per point, with opacity
-// increasing from oldest (most faded) to newest (most opaque). Matches HA's
-// own trail-fade formula exactly (src/components/map/ha-map.ts /
-// hui-map-card.ts, confirmed this session): gradualOpacity = 0.8,
-// baseOpacity = 1 - gradualOpacity = 0.2, opacityStep = gradualOpacity /
-// (points.length - 2), opacity = baseOpacity + segmentIndex * opacityStep.
-// Floor is HA's own 20% (baseOpacity), not an override. A 2-point trail (1
-// segment) is a documented edge case: avoids the points.length - 2 === 0
-// division by using 100% opacity for that single segment, matching HA's own
-// handling of the same case.
-//
-// Each point's circleMarker also gets a hover tooltip (entity name +
-// formatted timestamp), matching HA's native map card exactly (bindTooltip,
-// default hover trigger, direction: 'top' -- confirmed this session).
-// Points are {lat, lon, time} objects (see fetchEntityTrailHistory/
-// getEntityTrailPoint); "hass" and "hoursToShow" are needed to format the
-// timestamp per HA's own today/6-day-window branching, "entityName" is the
-// tooltip's first line.
+// Builds one entity's trail: a segment per point pair plus a dot per point, fading from old to new
+// with HA's formula (base 0.2, step 0.8/(n-2); 2 points: opacity 1). Each dot has a hover tooltip
+// with entity name and time, as HA's map card.
 function buildTrailLayerGroup(points, style, hass, hoursToShow, entityName) {
   const group = L.layerGroup();
 
@@ -1123,10 +572,7 @@ class ChronoPmtilesCard extends LitElement {
     .chrono-zoom-button:hover {
       background: #f4f4f4;
     }
-    /* Highlighted button of the current zoom level. Same default colors as
-       Leaflet's disabled buttons; more specific than the "controls"
-       background/color rule so the highlight stays visible when only those
-       are set; "controls" disabled_background/disabled_color override it. */
+    /* Highlighted zoom button; outranks "controls" background/color, not disabled_*. */
     .map-container .chrono-zoom-button.chrono-zoom-button-active {
       background: #f4f4f4;
       color: #bbb;
@@ -1151,13 +597,8 @@ class ChronoPmtilesCard extends LitElement {
     this._initEntities();
   }
 
-  // firstUpdated() fires only once, ever. HA's frontend disconnects and
-  // reconnects this same element between contexts (e.g. the card editor's
-  // own preview closing and the live dashboard view taking over), which
-  // runs disconnectedCallback() -> _teardownMap() without ever calling
-  // firstUpdated() again -- so without this, the map stays dead after the
-  // first disconnect. Waits on updateComplete because connectedCallback()
-  // fires before Lit's own re-render has put <div id="map"> back in the DOM.
+  // Re-initializes the map when HA reconnects this element (firstUpdated() fires only once).
+  // Waits for updateComplete, because <div id="map"> is not back in the DOM yet.
   connectedCallback() {
     super.connectedCallback();
     if (this._config && !this._leafletMap) {
@@ -1168,10 +609,7 @@ class ChronoPmtilesCard extends LitElement {
     }
   }
 
-  // Lit calls this after every reactive property update, including each
-  // time hass is reassigned by HA's frontend (new state snapshot). Only
-  // entity marker positions/trails need to react to that -- the map/style
-  // itself is built once in _initMap() and not rebuilt on every hass tick.
+  // On hass updates only markers/trails change; the map itself is built once in _initMap().
   updated(changedProps) {
     if (changedProps.has('hass') && this._leafletMap) {
       // null = no filter (update all tracked entities), e.g. first hass.
@@ -1180,10 +618,7 @@ class ChronoPmtilesCard extends LitElement {
     this._pendingEntityIds = null;
   }
 
-  // v0.1.28: skip the whole Lit update cycle when HA reassigns "hass" but
-  // none of THIS card's tracked entities changed (see version history). HA
-  // replaces a state object only when that entity changes, so an object
-  // reference comparison is sufficient and cheap.
+  // Skips the update when hass changed but none of this card's entities did (v0.1.28).
   shouldUpdate(changedProps) {
     this._pendingEntityIds = null;
     if (changedProps.has('_config')) return true;
@@ -1221,28 +656,7 @@ class ChronoPmtilesCard extends LitElement {
 
     const center = this._getCenter();
 
-    // maxBounds/maxBoundsViscosity/minZoom recommended by maplibre-gl-leaflet's
-    // own docs, to avoid pan/zoom sync glitches between the two engines.
-    // When "initial_zoom_level" is not set in config, the real initial view
-    // is computed from entity positions (see v0.1.26 version history) --
-    // but only once the map container's final size is known, which isn't
-    // yet the case here. This setView() is a placeholder in that case: per
-    // explicit instruction, being visibly at this placeholder view for the
-    // brief window until the first ResizeObserver firing below is accepted
-    // as-is.
-    // v0.1.30: an explicit "center" also disables auto-fit (an explicit
-    // choice of center is not overridden by the bounding-box fit). Zoom is
-    // then initial_zoom_level, or CENTER_DEFAULT_ZOOM (11, same as the
-    // single-entity auto-fit) when only "center" is set.
-    // v0.1.31: only an explicit initial_zoom_level skips the deferred fit.
-    // "center" without a zoom goes through the deferred path too, where
-    // _applyAutoFitView() keeps that center and zooms to fit all entities
-    // around it (needs the final container size, like auto-fit).
-    // v0.1.32: the view is always (re)computed by _computeView() from the
-    // center/zoom rules (see v0.1.32 version history). This setView() is only
-    // a placeholder until the ResizeObserver's first firing below, when the
-    // container's final size is known (the fitted zoom depends on it) and
-    // _applyView() sets the real initial view.
+    // maxBounds per maplibre-gl-leaflet docs; placeholder view until _applyView() on the first resize.
     const { minZoom, maxZoom } = this._zoomLimits();
     this._leafletMap = L.map(mapEl, {
       maxBounds: [[180, -Infinity], [-180, Infinity]],
@@ -1262,28 +676,10 @@ class ChronoPmtilesCard extends LitElement {
       this._addZoomButtonsControl();
     }
 
-    // v0.2.40: the style may need a style file fetched first, so the
-    // MapLibre layer is added asynchronously by _buildStyle(), once the style
-    // is ready. The ResizeObserver below is independent of it.
+    // The MapLibre layer is added by _buildStyle() once the style (possibly a style file) is ready.
     this._buildStyle(this._leafletMap);
 
-    // HA's dashboard grid can settle the card's final width AFTER this
-    // point (e.g. during initial masonry layout), leaving Leaflet -- and
-    // therefore the MapLibre canvas it drives -- sized to an earlier,
-    // narrower measurement (confirmed live: map filled only the left half
-    // of the card). invalidateSize() re-measures the container and
-    // maplibre-gl-leaflet propagates that to MapLibre's own canvas.
-    //
-    // v0.1.26: when "initial_zoom_level" is not set in config, this callback's FIRST-ever
-    // firing (this._hasAutoFitted starts false) is also when the deferred
-    // auto-fit-to-entities view is computed and applied, and when
-    // _addResetFocusControl() is finally added -- both must wait until
-    // here because Leaflet's own getBoundsZoom() (confirmed by reading its
-    // real v1.9.4 source this session) computes zoom from the map's
-    // CURRENT container size, which is not yet final any earlier than this.
-    // Every later firing (a genuine window resize) is indistinguishable
-    // from this one at the ResizeObserver level, so this._hasAutoFitted
-    // gates it to run exactly once, per explicit instruction.
+    // Re-measures on every resize (HA may settle the width late); the first firing sets the view.
     this._hasAutoFitted = false; // v0.1.32: initial view always applied on first firing
     this._resizeObserver = new ResizeObserver(() => {
       this._leafletMap?.invalidateSize();
@@ -1295,16 +691,12 @@ class ChronoPmtilesCard extends LitElement {
     this._resizeObserver.observe(mapEl);
   }
 
-  // v0.2.40: resolves the style (loading a style file if "flavor" names
-  // one) and then adds the MapLibre layer to the given Leaflet map. If the
-  // card was torn down or rebuilt while the style file was loading
-  // (this._leafletMap is no longer that map), nothing is added.
+  // Resolves the style and adds the MapLibre layer; skipped if the card was torn down meanwhile.
   async _buildStyle(leafletMap) {
     const style = await resolveStyle(this._config);
     if (this._leafletMap !== leafletMap) return; // torn down meanwhile
 
-    // v0.2.41: control colors, as one constructed stylesheet in the shadow
-    // root (removed again in _teardownMap()).
+    // Control colors as a constructed stylesheet (removed in _teardownMap()).
     const controlsCss = buildControlsCss(style.controls);
     if (controlsCss) {
       this._controlsSheet = new CSSStyleSheet();
@@ -1323,11 +715,7 @@ class ChronoPmtilesCard extends LitElement {
     this._glLayer = L.maplibreGL({
       style: {
         version: 8,
-        // Protomaps' free hosted glyphs/sprites (per your original brief --
-        // fine to start with, can move to self-hosted later). Required for
-        // any text label or icon layer to render at all; without "glyphs"
-        // specifically, MapLibre silently drops all text layers with no
-        // console error, which is why labels were missing in v0.0.5.
+        // Protomaps' hosted glyphs/sprites; without "glyphs" MapLibre silently drops all text layers.
         glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
         sprite: spriteUrl,
         sources: {
@@ -1344,17 +732,9 @@ class ChronoPmtilesCard extends LitElement {
       },
     }).addTo(this._leafletMap);
 
-    // Shield badge fill/border colors aren't reachable through Flavor/
-    // palette or layer paint/layout properties -- they're baked into the
-    // sprite image itself (see v0.0.8 version history). getMaplibreMap() is
-    // maplibre-gl-leaflet's public accessor for the real maplibregl.Map
-    // instance it constructs internally.
+    // Shield colors live in the sprite image; getMaplibreMap() gives the real maplibregl.Map.
     const maplibreMap = this._glLayer.getMaplibreMap();
-    // v0.1.29: after the shield recolor has finished (instantly, if no
-    // shield colors are configured), wait for MapLibre's next "idle" event
-    // -- all tiles loaded, all rendering done, no transitions -- and then
-    // re-measure and resize once, which makes MapLibre re-run symbol
-    // placement with everything final. See v0.1.29 version history.
+    // After the shield recolor, resize once on the next "idle" so labels are placed (v0.1.29).
     maplibreMap.on('load', () => {
       applyShieldColors(maplibreMap, spriteUrl, flavorName, style.seasoning)
         .catch((err) => {
@@ -1367,18 +747,13 @@ class ChronoPmtilesCard extends LitElement {
             this._leafletMap.invalidateSize();
             maplibreMap.resize();
           });
-          // "idle" only fires after a render; if the map was already idle
-          // (e.g. no shield colors, so nothing changed), force one frame so
-          // the listener above is guaranteed to run.
+          // "idle" only fires after a render, so force one.
           maplibreMap.triggerRepaint();
         });
     });
   }
 
-  // v0.1.32: zoom limits. min/max_zoom_level are undocumented overrides
-  // (for testing/debugging); defaults are the hardcoded MIN/MAX_ZOOM_LEVEL.
-  // min/max_auto_fit_zoom bound the FITTED zoom only, and are themselves
-  // kept inside the overall limits.
+  // Zoom limits: min/max_zoom_level (undocumented overrides); min/max_auto_fit_zoom bound the fit.
   _zoomLimits() {
     const cfg = this._config;
     const minZoom = cfg.min_zoom_level ?? MIN_ZOOM_LEVEL;
@@ -1393,20 +768,9 @@ class ChronoPmtilesCard extends LitElement {
     };
   }
 
-  // v0.1.32: computes the view from the decoupled center/zoom rules:
-  //   Center: "center" if set; else, with auto_fit, the middle of the
-  //           tracked entities; else zone.home.
-  //   Zoom:   initial_zoom_level if set; else, with auto_fit, the fitted
-  //           zoom kept within [min_auto_fit_zoom, max_auto_fit_zoom]; else
-  //           DEFAULT_ZOOM_LEVEL (11). Also DEFAULT_ZOOM_LEVEL when auto_fit
-  //           has nothing to fit (no entities with a position, or all of
-  //           them exactly on the center).
-  // The fitted zoom is the largest zoom at which a box SYMMETRIC around the
-  // center (measured in Web Mercator pixel space, so the center stays
-  // visually in the middle), containing every entity plus 5% padding, fits
-  // the container. Uses Leaflet's getBoundsZoom(), which depends on the
-  // container's current pixel size -- hence only called once that size is
-  // final (ResizeObserver's first firing) and from reset-focus.
+  // Computes the view. Center: "center", else (auto_fit) middle of the entities, else zone.home.
+  // Zoom: initial_zoom_level, else (auto_fit) fitted zoom within min/max_auto_fit_zoom, else 11.
+  // The fit box is symmetric around the center and needs the final container size.
   _computeView() {
     const map = this._leafletMap;
     const cfg = this._config;
@@ -1438,10 +802,7 @@ class ChronoPmtilesCard extends LitElement {
       dy = Math.max(dy, Math.abs(pp.y - cp.y));
     }
     if (dx === 0 && dy === 0) {
-      // v0.1.33: a single entity exactly on the center has nothing to fit
-      // -> DEFAULT_ZOOM_LEVEL. Two or more entities on the exact same spot
-      // are still a fit (the tightest possible one) -> max_auto_fit_zoom.
-      // (Leaflet can't compute a zoom for a zero-size box, so handled here.)
+      // Zero-size box: one entity -> default zoom, 2+ on one spot -> max_auto_fit_zoom (v0.1.33).
       return {
         center: centerLatLng,
         zoom: points.length >= 2 ? maxFit : clamp(DEFAULT_ZOOM_LEVEL),
@@ -1456,20 +817,14 @@ class ChronoPmtilesCard extends LitElement {
     return { center: centerLatLng, zoom: Math.min(maxFit, Math.max(minFit, fitted)) };
   }
 
-  // v0.1.32: applies _computeView(). Used for the initial view and by
-  // reset-focus, so both follow exactly the same rules, with current entity
-  // positions.
+  // Applies _computeView(); used for the initial view and by reset-focus.
   _applyView() {
     if (!this._leafletMap) return;
     const { center, zoom } = this._computeView();
     this._leafletMap.setView(center, zoom);
   }
 
-  // Adds a Leaflet control below the built-in zoom +/- buttons that resets
-  // the view. Icon matches HA's own button (mdiImageFilterCenterFocus).
-  // v0.1.32: always added once in _initMap(); on click it re-applies the
-  // same view rules as the initial load (_applyView), with current entity
-  // positions.
+  // Reset-focus button below +/-; re-applies the initial view rules with current positions.
   _addResetFocusControl() {
     const ResetFocusControl = L.Control.extend({
       options: { position: 'topleft' },
@@ -1478,16 +833,9 @@ class ChronoPmtilesCard extends LitElement {
         const link = L.DomUtil.create('a', '', container);
         link.href = '#';
         link.title = 'Reset focus';
-        // display:flex + centering here fixes v0.1.23's icon being pinned
-        // to the top of the 26x26 leaflet-bar button box: leaflet.css sizes
-        // "leaflet-bar a" via line-height for text glyphs, which does not
-        // vertically center a display:block SVG. Icon size bumped 16->22px
-        // to better fill the button, matching HA's own icon-button sizing
-        // more closely.
+        // Flex centering for the SVG icon (leaflet-bar a centers text via line-height only).
         link.style.cssText = 'display:flex;align-items:center;justify-content:center;';
-        // Real mdiImageFilterCenterFocus path data, confirmed against MDI's
-        // own icon library this session (pictogrammers.com/library/mdi),
-        // matching HA's own reset-focus button icon exactly.
+        // mdiImageFilterCenterFocus, as HA's own reset-focus button.
         link.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9M19,19H15V21H19A2,2 0 0,0 21,19V15H19M19,3H15V5H19V9H21V5A2,2 0 0,0 19,3M5,5H9V3H5A2,2 0 0,0 3,5V9H5M5,15H3V19A2,2 0 0,0 5,21H9V19H5V15Z"/></svg>`;
         L.DomEvent.on(link, 'click', L.DomEvent.stop)
           .on(link, 'click', () => {
@@ -1499,16 +847,13 @@ class ChronoPmtilesCard extends LitElement {
     new ResetFocusControl().addTo(this._leafletMap);
   }
 
-  // Adds a Leaflet control (bottomleft) showing the current integer zoom
-  // level, kept live via the map's own "zoomend" event. Only added when
-  // "show_zoom_level" is true in config (default false).
+  // Zoom-level display (bottomleft), updated on "zoomend"; only with show_zoom_level.
   _addZoomLevelControl() {
     const ZoomLevelControl = L.Control.extend({
       options: { position: 'bottomleft' },
       onAdd: (map) => {
         const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control chrono-zoom-level');
-        // v0.2.41: background/color moved to static styles (.chrono-zoom-level)
-        // so "controls" can override them; padding/font stay inline.
+        // background/color come from static styles, so "controls" can override them.
         container.style.cssText = 'padding:2px 6px;font:bold 12px sans-serif;';
         const render = () => { container.textContent = String(Math.round(map.getZoom())); };
         render();
@@ -1519,31 +864,8 @@ class ChronoPmtilesCard extends LitElement {
     new ZoomLevelControl().addTo(this._leafletMap);
   }
 
-  // v0.2.42: adds a Leaflet control (bottomright) showing the map center as
-  // "lat: .. lon: .." with 4 decimals, updated on every "move" event. Leaflet
-  // inserts bottom-corner controls above the ones already there, so this
-  // lands directly above the attribution label (created with the map). Only
-  // added when "show_lat_lon" is true in config (default false).
-  // v0.2.44: no longer a Leaflet control -- Leaflet only has four corners,
-  // so a bottom-center position needs a plain element. It is placed inside
-  // the map's own container (map.getContainer(), the Leaflet container), so
-  // Leaflet's .leaflet-bar styling applies exactly as it does to the
-  // zoom-level control (including the .leaflet-touch border), and at the
-  // same height: bottom 10px = leaflet.css ".leaflet-bottom .leaflet-control
-  // { margin-bottom: 10px }" with the corner at bottom 0; z-index 1000 as
-  // Leaflet's control corners. Text is selectable (drag, double/triple
-  // click, then Ctrl+C): disableClickPropagation() stops a mousedown here
-  // from starting a map drag (which moved the map and, through "move",
-  // replaced the text and so the selection) and a double-click from
-  // zooming the map.
-  // v0.2.45: zoom preset buttons (topright), one per level in
-  // "zoom_buttons", stacked, with the same look as the zoom-level display.
-  // A click zooms to that level and keeps the current center (animated, like
-  // the +/- buttons). The button of the current zoom level is highlighted
-  // (class chrono-zoom-button-active, updated on "zoomend"); clicking it does
-  // nothing. Levels outside the card's zoom limits (1-18 by default) are
-  // left out; the others are still shown. Only added when
-  // "show_zoom_buttons" is true (default false).
+  // Zoom preset buttons (topright), one per valid level in zoom_buttons; a click zooms, keeping
+  // the center. The current level's button is highlighted. Only with show_zoom_buttons.
   _addZoomButtonsControl() {
     const { minZoom, maxZoom } = this._zoomLimits();
     const levels = (Array.isArray(this._config.zoom_buttons) ? this._config.zoom_buttons : [])
@@ -1578,6 +900,8 @@ class ChronoPmtilesCard extends LitElement {
     new ZoomButtonsControl().addTo(this._leafletMap);
   }
 
+  // Lat/lon display at the bottom center (plain element in the map container, not a control).
+  // Text selectable: click/scroll propagation stopped, so dragging over it doesn't pan the map.
   _addCenterControl() {
     const map = this._leafletMap;
     const container = L.DomUtil.create('div', 'leaflet-bar chrono-center', map.getContainer());
@@ -1594,8 +918,7 @@ class ChronoPmtilesCard extends LitElement {
   }
 
   _teardownMap() {
-    // v0.2.44: the lat/lon display is not a Leaflet control, so map.remove()
-    // does not remove it.
+    // The lat/lon display is not a Leaflet control, so map.remove() doesn't remove it.
     if (this._centerControlEl) {
       this._centerControlEl.remove();
       this._centerControlEl = null;
@@ -1650,8 +973,7 @@ class ChronoPmtilesCard extends LitElement {
       this._entityTrailStyles.set(entityId, style);
 
       if (hoursToShow > 0) {
-        // Draw the trail layerGroup BEFORE the live marker, so the marker
-        // (added after) sits visually on top of its own trail's endpoint.
+        // Trail first, so the marker is drawn on top of it.
         const trailGroup = L.layerGroup().addTo(this._leafletMap);
         this._entityTrails.set(entityId, trailGroup);
         this._entityTrailPoints.set(entityId, []);
@@ -1679,15 +1001,8 @@ class ChronoPmtilesCard extends LitElement {
     }
   }
 
-  // Rebuilds one entity's trail layerGroup from scratch against its full
-  // stored point array. Required on every update, not just the initial
-  // fetch: HA's own opacity formula (see buildTrailLayerGroup) divides by
-  // total point count, so every existing segment's correct opacity changes
-  // as soon as a new point is appended -- there is no valid append-only
-  // path (confirmed/decided explicitly this session). Clears the previous
-  // layerGroup's contents and adds the freshly built one's layers into it,
-  // rather than replacing the layerGroup instance, so the group stays
-  // addTo()'d to the map throughout.
+  // Rebuilds one entity's trail from all stored points (opacity depends on the point count),
+  // reusing the same layerGroup so it stays on the map.
   _redrawEntityTrail(entityId) {
     const trailGroup = this._entityTrails?.get(entityId);
     const points = this._entityTrailPoints?.get(entityId);
@@ -1703,13 +1018,8 @@ class ChronoPmtilesCard extends LitElement {
     freshGroup.eachLayer((layer) => trailGroup.addLayer(layer));
   }
 
-  // Called from updated() when a tracked entity changed (v0.1.28: only for
-  // the entity ids shouldUpdate() found changed; null = all). Moves the
-  // marker only if its position changed, replaces its icon only if the
-  // generated marker HTML changed (setIcon() rebuilds the <img>, which is
-  // what caused the blinking -- see v0.1.28 version history), and -- if the
-  // position is new -- appends it to the entity's stored point array and
-  // fully rebuilds the trail (see _redrawEntityTrail).
+  // Updates changed entities (null = all): moves a marker only if its position changed, replaces
+  // its icon only if the HTML changed (v0.1.28), and appends new positions to the trail.
   _updateEntityPositions(entityIds = null) {
     if (!this._entityMarkers) return;
     for (const [entityId, marker] of this._entityMarkers) {
@@ -1744,14 +1054,8 @@ class ChronoPmtilesCard extends LitElement {
     }
   }
 
-  // Resolves the map center (v0.1.30). "center" config may be:
-  //   center: person.rob            -> that entity's CURRENT position
-  //   center: { entity: person.rob } -> same
-  //   center: { lat: .., lon: .. }  -> fixed coordinates (unchanged behavior)
-  // Falls back to HA's configured Home zone when no center is given, or when
-  // a configured center entity doesn't exist / has no location (with a
-  // console warning in that case). The center entity does NOT need to be in
-  // the "entities" list -- it is read straight from hass.states.
+  // Map center: "center" entity (current position) or {lat, lon}; falls back to zone.home.
+  // The center entity doesn't need to be in "entities".
   _getCenter() {
     const centerCfg = this._config.center;
     if (centerCfg != null) {
@@ -1772,13 +1076,7 @@ class ChronoPmtilesCard extends LitElement {
     return { lat: 0, lon: 0 };
   }
 
-  // leaflet.css and maplibre-gl.css are required for correct rendering
-  // (marker positioning, canvas sizing, attribution control, etc.) but
-  // neither library bundles its CSS into the JS import -- and a Lovelace
-  // card's shadow DOM is not reached by a <link> placed in the document
-  // head. So each stylesheet is fetched once and adopted into every
-  // card instance's shadow root via a shared, cached constructable
-  // stylesheet.
+  // Adopts leaflet.css and maplibre-gl.css into the shadow root (a <link> in <head> can't reach it).
   async _injectLibraryStyles() {
     const sheets = await Promise.all([
       loadSharedStylesheet('leaflet-css', 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css'),
@@ -1793,9 +1091,7 @@ class ChronoPmtilesCard extends LitElement {
 customElements.define('chrono-pmtiles-card', ChronoPmtilesCard);
 
 // --- Shared stylesheet loader --------------------------------------------------
-// Fetches a CSS file once per URL and caches the resulting CSSStyleSheet,
-// so N card instances on a dashboard cause exactly one network request
-// and one parse per stylesheet, not N of each.
+// Fetches each CSS file once and shares the CSSStyleSheet across all card instances.
 const _sheetCache = new Map();
 function loadSharedStylesheet(key, url) {
   if (_sheetCache.has(key)) return _sheetCache.get(key);
