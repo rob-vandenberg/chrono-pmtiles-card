@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtual environments
+.env
+venv/
+.venv/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Folders
+.*/
+!.github/
+*.bak/
+docs/
+logs/
+backup/
+artwork/
+screenshot/
+release/
+github/
+ha/ 
+
+# Files
+*.bak
+*.ai
+*.psd
+*.bat
+*.zip
+*.jfif
+
+# Build output (only ever committed by the GitHub Actions build workflow)
+# dist/
+
+# IDE
+.vscode/
+.idea/

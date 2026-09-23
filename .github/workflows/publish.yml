@@ -19,7 +19,7 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=$(grep -o "CARD_VERSION = '[']*'" src/${{ env.PROJECT_NAME }}.js ^| sed "s/CARD_VERSION = '//;s/'//")" >> $GITHUB_OUTPUT
+        run: echo "version=$(grep -o "CARD_VERSION = '[^']*'" src/${{ env.PROJECT_NAME }}.js | sed "s/CARD_VERSION = '//;s/'//")" >> $GITHUB_OUTPUT
 
       - name: Validate version format
         run: echo "${{ steps.version.outputs.version }}" | grep -E "^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$"
@@ -28,14 +28,14 @@ jobs:
         id: commit_message
         run: |
           {
-            echo "message^<^<EOF"
-            git log -1 --pretty=B "${{ steps.version.outputs.version }}"
+            echo "message<<EOF"
+            git log -1 --pretty=%B "${{ steps.version.outputs.version }}"
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
       - name: Get commit author
         id: commit_author
-        run: echo "name=$(git log -1 --pretty=an "${{ steps.version.outputs.version }}")" >> $GITHUB_OUTPUT
+        run: echo "name=$(git log -1 --pretty=%an "${{ steps.version.outputs.version }}")" >> $GITHUB_OUTPUT
 
       - name: Install dependencies
         run: yarn install
