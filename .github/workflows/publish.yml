@@ -1,0 +1,65 @@
+name: publish-new-version
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PROJECT_NAME: ${{ github.event.repository.name }}
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: echo "version=$(grep -o "CARD_VERSION = '[']*'" src/${{ env.PROJECT_NAME }}.js ^| sed "s/CARD_VERSION = '//;s/'//")" >> $GITHUB_OUTPUT
+
+      - name: Validate version format
+        run: echo "${{ steps.version.outputs.version }}" | grep -E "^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$"
+
+      - name: Get last commit message
+        id: commit_message
+        run: |
+          {
+            echo "message^<^<EOF"
+            git log -1 --pretty=B "${{ steps.version.outputs.version }}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Get commit author
+        id: commit_author
+        run: echo "name=$(git log -1 --pretty=an "${{ steps.version.outputs.version }}")" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Build
+        run: yarn build
+
+      - name: Commit and push
+        uses: EndBug/add-and-commit@v10
+        with:
+          add: '["dist/${{ env.PROJECT_NAME }}.js"]'
+          message: "Publishing version ${{ steps.version.outputs.version }}"
+          tag: "v${{ steps.version.outputs.version }}"
+          tag_push: '--force'
+
+      - name: Publish Github release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: "v${{ steps.version.outputs.version }}"
+          name: "v${{ steps.version.outputs.version }}"
+          body: |
+            ${{ steps.commit_message.outputs.message }}
+
+            - Published by ${{ steps.commit_author.outputs.name }}.
+          makeLatest: true
+          allowUpdates: true
+          artifacts: "dist/*.js"

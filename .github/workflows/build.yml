@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/*.js'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PROJECT_NAME: ${{ github.event.repository.name }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get version
+        id: version
+        run: echo "version=$(grep -o "CARD_VERSION = '[']*'" src/${{ env.PROJECT_NAME }}.js ^| sed "s/CARD_VERSION = '//;s/'//")" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Build
+        run: yarn build
+
+      - name: Commit built file
+        uses: EndBug/add-and-commit@v10
+        with:
+          add: '["dist/${{ env.PROJECT_NAME }}.js"]'
+          message: "Auto-build minified JS from source v${{ steps.version.outputs.version }}"
