@@ -11,9 +11,22 @@ import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2'
 import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.2.40';
+const CARD_VERSION = '0.2.41';
 
 // --- Version History ---------------------------------------------------------
+// v0.2.41: Map control colors, per explicit instruction. New top-level key
+//          "controls" (card config and style file) with individual keys:
+//          background, color, border, hover_background, disabled_background,
+//          disabled_color. Applies to the zoom +/- buttons, the reset-focus
+//          button and the zoom-level display (background/color only). Same
+//          order as all other styling: style file first, card config on top,
+//          per individual key; keys left out keep the current look. Applied
+//          as a constructed stylesheet in the card's shadow root (not inline
+//          styles), so Leaflet's hover and disabled states keep working;
+//          selectors are prefixed with .map-container so they win over
+//          leaflet.css regardless of load order. The zoom-level display's
+//          hardcoded background/color moved from its inline style into the
+//          card's static styles (same values) so "controls" can override it.
 // v0.2.40: Style files, per explicit instruction. "flavor" can now also be a
 //          URL to a .yaml, .yml or .json style file (extension picks the
 //          parser: js-yaml for .yaml/.yml, JSON.parse for .json). A style
@@ -628,7 +641,47 @@ async function resolveStyle(config) {
     flavorName,
     seasoning: mergeSeasoning(file?.seasoning ?? {}, config.seasoning),
     layers: mergeLayerOverrides(file?.layers, config.layers),
+    controls: {
+      ...(isPlainObject(file?.controls) ? file.controls : {}),
+      ...(isPlainObject(config.controls) ? config.controls : {}),
+    },
   };
+}
+
+// v0.2.41: builds CSS for the map controls from the "controls" keys. Only
+// keys that are set produce a declaration; everything else keeps Leaflet's
+// (or the card's) own look. Selectors (.map-container .leaflet-control
+// .leaflet-bar ...) are more specific than every leaflet.css rule they
+// override, including ".leaflet-bar a.leaflet-disabled", so the result does
+// not depend on which stylesheet loads last. The disabled rule comes after
+// the hover rule (same specificity), as in leaflet.css, so disabled wins.
+// Without disabled_background, a disabled button keeps "background".
+function buildControlsCss(controls) {
+  const rule = (selector, declarations) => {
+    const body = declarations
+      .filter(([, value]) => value != null && value !== '')
+      .map(([prop, value]) => `${prop}: ${value};`)
+      .join(' ');
+    return body ? `${selector} { ${body} }` : '';
+  };
+  return [
+    rule('.map-container .leaflet-control.leaflet-bar a', [
+      ['background-color', controls.background],
+      ['color', controls.color],
+      ['border-bottom-color', controls.border],
+    ]),
+    rule('.map-container .leaflet-control.leaflet-bar a:hover, .map-container .leaflet-control.leaflet-bar a:focus', [
+      ['background-color', controls.hover_background],
+    ]),
+    rule('.map-container .leaflet-control.leaflet-bar a.leaflet-disabled', [
+      ['background-color', controls.disabled_background],
+      ['color', controls.disabled_color],
+    ]),
+    rule('.map-container .chrono-zoom-level', [
+      ['background', controls.background],
+      ['color', controls.color],
+    ]),
+  ].filter(Boolean).join('\n');
 }
 
 // Shield sprite icon names covered by palette.shield_fill/shield_border.
@@ -1018,6 +1071,10 @@ class ChronoPmtilesCard extends LitElement {
       width: 100%;
       height: 100%;
     }
+    .chrono-zoom-level {
+      background: rgba(255,255,255,0.85);
+      color: #333;
+    }
   `;
 
   render() {
@@ -1182,6 +1239,18 @@ class ChronoPmtilesCard extends LitElement {
   async _buildStyle(leafletMap) {
     const style = await resolveStyle(this._config);
     if (this._leafletMap !== leafletMap) return; // torn down meanwhile
+
+    // v0.2.41: control colors, as one constructed stylesheet in the shadow
+    // root (removed again in _teardownMap()).
+    const controlsCss = buildControlsCss(style.controls);
+    if (controlsCss) {
+      this._controlsSheet = new CSSStyleSheet();
+      this._controlsSheet.replaceSync(controlsCss);
+      this.shadowRoot.adoptedStyleSheets = [
+        ...this.shadowRoot.adoptedStyleSheets,
+        this._controlsSheet,
+      ];
+    }
 
     const pmtilesUrl = this._config.pmtiles_url;
     const flavorName = style.flavorName;
@@ -1375,7 +1444,9 @@ class ChronoPmtilesCard extends LitElement {
       options: { position: 'bottomleft' },
       onAdd: (map) => {
         const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control chrono-zoom-level');
-        container.style.cssText = 'background:rgba(255,255,255,0.85);padding:2px 6px;font:bold 12px sans-serif;color:#333;';
+        // v0.2.41: background/color moved to static styles (.chrono-zoom-level)
+        // so "controls" can override them; padding/font stay inline.
+        container.style.cssText = 'padding:2px 6px;font:bold 12px sans-serif;';
         const render = () => { container.textContent = String(Math.round(map.getZoom())); };
         render();
         map.on('zoomend', render);
@@ -1397,6 +1468,11 @@ class ChronoPmtilesCard extends LitElement {
     if (this._leafletMap) {
       this._leafletMap.remove();
       this._leafletMap = null;
+    }
+    if (this._controlsSheet) {
+      this.shadowRoot.adoptedStyleSheets = this.shadowRoot.adoptedStyleSheets
+        .filter((sheet) => sheet !== this._controlsSheet);
+      this._controlsSheet = null;
     }
     this._entityMarkers = null;
     this._entityMarkerHtml = null;
