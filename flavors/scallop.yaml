@@ -1,0 +1,142 @@
+name: Scallop
+version: 0.0.1
+seasoning:
+  background: '#F5EFCF'
+  earth: '#F5EFCF'
+  park_a: '#D1E3C4'
+  park_b: '#B8D8A8'
+  wood_a: '#C5DEC0'
+  wood_b: '#A8CDA0'
+  scrub_a: '#E0EAD8'
+  scrub_b: '#BDD8B4'
+  hospital: '#E8DFD5'
+  industrial: '#E8E2D5'
+  school: '#ECE6D8'
+  pedestrian: '#E8E1CF'
+  glacier: '#FFFFFF'
+  sand: '#EFE6C3'
+  beach: '#F5E3B5'
+  aerodrome: '#E3DDD0'
+  runway: '#FFFFFF'
+  zoo: '#CBE5CC'
+  military: '#E0DCD2'
+  buildings: '#E2DBD0'
+  water: '#93C2DC'
+  highway: '#FFC638'
+  highway_casing_early: '#D83030'
+  highway_casing_late: '#D83030'
+  major: '#D83030'
+  major_casing_early: '#D83030'
+  major_casing_late: '#D83030'
+  link: '#E3BB2B'
+  link_casing: '#D83030'
+  minor_a: '#E3BB2B'
+  minor_b: '#E3BB2B'
+  minor_casing: '#CBA218'
+  other: '#FFFFFF'
+  minor_service: '#FFFFFF'
+  minor_service_casing: '#DDD6C5'
+  railway: '#6B7280'
+  tunnel_other_casing: '#C2BBB0'
+  tunnel_minor_casing: '#CBA218'
+  tunnel_link_casing: '#CBA218'
+  tunnel_major_casing: '#B02525'
+  tunnel_highway_casing: '#B02525'
+  tunnel_other: '#FAF7EE'
+  tunnel_minor: '#F5DE88'
+  tunnel_link: '#F5DE88'
+  tunnel_major: '#EAA0A0'
+  tunnel_highway: '#FCE090'
+  pier: '#D5CEC0'
+  bridges_other_casing: '#9E978C'
+  bridges_minor_casing: '#CBA218'
+  bridges_link_casing: '#CBA218'
+  bridges_major_casing: '#D83030'
+  bridges_highway_casing: '#D83030'
+  bridges_other: '#FFFFFF'
+  bridges_minor: '#E3BB2B'
+  bridges_link: '#E3BB2B'
+  bridges_major: '#D83030'
+  bridges_highway: '#FFC638'
+  boundaries: '#4A7BB0'
+  roads_label_minor: '#1A1A1A'
+  roads_label_minor_halo: '#E3BB2B'
+  roads_label_major: '#1A1A1A'
+  roads_label_major_halo: '#FFFFFF'
+  ocean_label: '#2B5A8C'
+  subplace_label: '#1A1A1A'
+  subplace_label_halo: '#F5EFCF'
+  city_label: '#1A1A1A'
+  city_label_halo: '#FFFFFF'
+  state_label: '#4A7BB0'
+  state_label_halo: '#F5EFCF'
+  country_label: '#1A1A1A'
+  address_label: '#505050'
+  address_label_halo: '#FFFFFF'
+  pois:
+    blue: '#2B5A8C'
+    green: '#2D7541'
+    lapis: '#4A7BB0'
+    pink: '#A83868'
+    red: '#D83030'
+    slategray: '#534C59'
+    tangerine: '#CBA218'
+    turquoise: '#1E8385'
+  landcover:
+    grassland: rgba(209, 227, 196, 0.5)
+    barren: rgba(239, 230, 195, 0.4)
+    urban_area: rgba(232, 223, 213, 0.6)
+    farmland: rgba(245, 239, 207, 0.3)
+    glacier: rgba(255, 255, 255, 1)
+    scrub: rgba(224, 234, 216, 0.5)
+    forest: rgba(184, 216, 168, 0.6)
+layers:
+  roads_shields:
+    layout:
+      text-size: 12
+      icon-size: 1.1
+  roads_highway:
+    paint:
+      line-width:
+        - interpolate
+        - - exponential
+          - 1.6
+        - - zoom
+        - 5
+        - 1
+        - 8
+        - 3
+        - 13
+        - 6
+        - 18
+        - 12
+  roads_highway_casing_early:
+    paint:
+      line-width:
+        - interpolate
+        - - exponential
+          - 1.6
+        - - zoom
+        - 5
+        - 1
+        - 8
+        - 2
+        - 13
+        - 4
+        - 18
+        - 4
+  roads_highway_casing_late:
+    paint:
+      line-width:
+        - interpolate
+        - - exponential
+          - 1.6
+        - - zoom
+        - 5
+        - 1
+        - 8
+        - 2
+        - 13
+        - 4
+        - 18
+        - 4
