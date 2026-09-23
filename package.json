@@ -2,9 +2,9 @@
   "name": "chrono-pmtiles-card",
   "version": "1.0.0",
   "scripts": {
-    "build": "terser src/chrono-pmtiles-card.js -o dist/chrono-pmtiles-card.js --compress --mangle"
+    "build": "esbuild src/chrono-pmtiles-card.js --bundle --format=esm --minify --outfile=dist/chrono-pmtiles-card.js"
   },
   "devDependencies": {
-    "terser": "^5.0.0"
+    "esbuild": "0.28.2"
   }
 }
