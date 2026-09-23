@@ -8,11 +8,34 @@ import * as maplibregl           from 'https://esm.sh/maplibre-gl@6.10.0';
 import 'https://esm.sh/@maplibre/maplibre-gl-leaflet@0.1.4?deps=maplibre-gl@6.10.0,leaflet@1.9.4';  // side-effect import: attaches L.maplibreGL. The ?deps= pin forces this package's internal "maplibre-gl"/"leaflet" imports to resolve to the SAME instances imported above, instead of a separate copy -- without it, addProtocol() registers on a different maplibregl instance than the one leaflet-maplibre-gl actually uses internally.
 import { Protocol }              from 'https://esm.sh/pmtiles@4.5.0';
 import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2';  // No ?deps= pin needed: this package has no maplibre-gl/leaflet dependency of its own (confirmed via npm registry metadata) -- it only generates plain style-spec layer objects, so the module-duplication issue that affects maplibre-gl-leaflet above cannot apply here.
+import { load as parseYaml }     from 'https://esm.sh/js-yaml@5.4.2';  // Style files (v0.2.40). "load" is a named export, and the ESM build has no imports of its own (both confirmed in the 5.4.2 package).
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '0.1.34';
+const CARD_VERSION = '0.2.40';
 
 // --- Version History ---------------------------------------------------------
+// v0.2.40: Style files, per explicit instruction. "flavor" can now also be a
+//          URL to a .yaml, .yml or .json style file (extension picks the
+//          parser: js-yaml for .yaml/.yml, JSON.parse for .json). A style
+//          file can contain "flavor" (a built-in name), "seasoning" and
+//          "layers". Styling is applied in this order, each level overriding
+//          individual settings of the one before:
+//            1. built-in flavor: the config's built-in name, else the style
+//               file's "flavor", else light;
+//            2. the style file's seasoning and layers;
+//            3. the card config's own seasoning and layers.
+//          Within a group (a layer's paint/layout, seasoning's pois/
+//          landcover) individual settings are merged, so setting one element
+//          leaves the rest of that group untouched. BEHAVIOR CHANGE: this
+//          also applies to the card config's own seasoning (previously one
+//          pois/landcover key replaced the whole group). A style file that
+//          is missing, cannot be parsed or does not contain an object is
+//          handled as if "flavor" were not set.
+//          The style is now built asynchronously in _buildStyle(); _initMap()
+//          still creates the Leaflet map and controls synchronously and adds
+//          the MapLibre layer when the style is ready (skipped if the card
+//          was torn down in the meantime). applyShieldColors() now receives
+//          the merged seasoning and the resolved flavor name.
 // v0.1.34: Fix history trails missing most points for "person" entities
 //          (sparse trail with long straight segments, while chrono-map-card
 //          showed the full route for the same entity and period). Root cause,
@@ -516,6 +539,96 @@ function applyLayerOverrides(generatedLayers, overrides) {
     }
     return merged;
   });
+}
+
+// --- Style files (v0.2.40) ---------------------------------------------------
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// True when "flavor" names a style file rather than a built-in flavor.
+// Query string / hash are ignored when checking the extension.
+function isStyleFileUrl(flavor) {
+  if (typeof flavor !== 'string') return false;
+  return /\.(ya?ml|json)$/i.test(flavor.split(/[?#]/)[0]);
+}
+
+// Fetches and parses a style file; the extension picks the parser. Returns
+// null when the file is missing, cannot be parsed, or does not contain an
+// object -- the caller then handles it as if "flavor" were not set.
+async function loadStyleFile(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error(`[chrono-pmtiles-card] Style file "${url}" not loaded: HTTP ${response.status}`);
+      return null;
+    }
+    const text = await response.text();
+    const isJson = /\.json$/i.test(url.split(/[?#]/)[0]);
+    const parsed = isJson ? JSON.parse(text) : parseYaml(text);
+    if (!isPlainObject(parsed)) {
+      console.error(`[chrono-pmtiles-card] Style file "${url}" ignored: it does not contain an object.`);
+      return null;
+    }
+    return parsed;
+  } catch (err) {
+    console.error(`[chrono-pmtiles-card] Style file "${url}" not loaded:`, err);
+    return null;
+  }
+}
+
+// Applies seasoning onto a flavor (or onto other seasoning), key by key.
+// Groups (pois, landcover) are merged one level deeper, so overriding one
+// element keeps the rest of that group.
+function mergeSeasoning(base, override) {
+  if (!isPlainObject(override)) return { ...base };
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    merged[key] = isPlainObject(value) && isPlainObject(merged[key])
+      ? { ...merged[key], ...value }
+      : value;
+  }
+  return merged;
+}
+
+// Merges two "layers" override maps (style file, then card config), per
+// layer id and then per individual paint/layout property; "override" wins.
+// paint/layout are only set when one side has them (see
+// applyLayerOverrides() on why an undefined "layout" must never be set).
+function mergeLayerOverrides(baseLayers, overrideLayers) {
+  const merged = isPlainObject(baseLayers) ? { ...baseLayers } : {};
+  if (!isPlainObject(overrideLayers)) return merged;
+  for (const [id, override] of Object.entries(overrideLayers)) {
+    const base = merged[id];
+    if (!isPlainObject(base) || !isPlainObject(override)) {
+      merged[id] = override;
+      continue;
+    }
+    const layer = { ...base, ...override };
+    if (base.paint || override.paint) layer.paint = { ...base.paint, ...override.paint };
+    if (base.layout || override.layout) layer.layout = { ...base.layout, ...override.layout };
+    merged[id] = layer;
+  }
+  return merged;
+}
+
+// Resolves the effective style from the card config, loading the style file
+// if "flavor" names one. Order: built-in flavor, then the style file's
+// seasoning/layers, then the card config's own seasoning/layers.
+async function resolveStyle(config) {
+  let file = null;
+  let flavorName = config.flavor;
+  if (isStyleFileUrl(config.flavor)) {
+    file = await loadStyleFile(config.flavor);
+    flavorName = file?.flavor;
+  }
+  flavorName = flavorName ?? DEFAULT_THEME;
+  return {
+    flavorName,
+    seasoning: mergeSeasoning(file?.seasoning ?? {}, config.seasoning),
+    layers: mergeLayerOverrides(file?.layers, config.layers),
+  };
 }
 
 // Shield sprite icon names covered by palette.shield_fill/shield_border.
@@ -1029,64 +1142,10 @@ class ChronoPmtilesCard extends LitElement {
       this._addZoomLevelControl();
     }
 
-    const pmtilesUrl = this._config.pmtiles_url;
-    const flavorName = this._config.flavor ?? DEFAULT_THEME;
-    const flavor = { ...namedFlavor(flavorName), ...this._config.seasoning };
-    const spriteUrl = `https://protomaps.github.io/basemaps-assets/sprites/v4/${flavorName}`;
-
-    this._glLayer = L.maplibreGL({
-      style: {
-        version: 8,
-        // Protomaps' free hosted glyphs/sprites (per your original brief --
-        // fine to start with, can move to self-hosted later). Required for
-        // any text label or icon layer to render at all; without "glyphs"
-        // specifically, MapLibre silently drops all text layers with no
-        // console error, which is why labels were missing in v0.0.5.
-        glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
-        sprite: spriteUrl,
-        sources: {
-          'chrono-pmtiles-source': {
-            type: 'vector',
-            url: `pmtiles://${pmtilesUrl}`,
-            attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
-          },
-        },
-        layers: applyLayerOverrides(
-          layers('chrono-pmtiles-source', flavor, { lang: 'en' }),
-          this._config.layers
-        ),
-      },
-    }).addTo(this._leafletMap);
-
-    // Shield badge fill/border colors aren't reachable through Flavor/
-    // palette or layer paint/layout properties -- they're baked into the
-    // sprite image itself (see v0.0.8 version history). getMaplibreMap() is
-    // maplibre-gl-leaflet's public accessor for the real maplibregl.Map
-    // instance it constructs internally.
-    const maplibreMap = this._glLayer.getMaplibreMap();
-    // v0.1.29: after the shield recolor has finished (instantly, if no
-    // shield colors are configured), wait for MapLibre's next "idle" event
-    // -- all tiles loaded, all rendering done, no transitions -- and then
-    // re-measure and resize once, which makes MapLibre re-run symbol
-    // placement with everything final. See v0.1.29 version history.
-    maplibreMap.on('load', () => {
-      applyShieldColors(maplibreMap, spriteUrl, flavorName, this._config.seasoning)
-        .catch((err) => {
-          console.error('[chrono-pmtiles-card] Failed to apply shield colors:', err);
-        })
-        .finally(() => {
-          if (this._glLayer?.getMaplibreMap() !== maplibreMap) return; // map torn down meanwhile
-          maplibreMap.once('idle', () => {
-            if (!this._leafletMap || this._glLayer?.getMaplibreMap() !== maplibreMap) return;
-            this._leafletMap.invalidateSize();
-            maplibreMap.resize();
-          });
-          // "idle" only fires after a render; if the map was already idle
-          // (e.g. no shield colors, so nothing changed), force one frame so
-          // the listener above is guaranteed to run.
-          maplibreMap.triggerRepaint();
-        });
-    });
+    // v0.2.40: the style may need a style file fetched first, so the
+    // MapLibre layer is added asynchronously by _buildStyle(), once the style
+    // is ready. The ResizeObserver below is independent of it.
+    this._buildStyle(this._leafletMap);
 
     // HA's dashboard grid can settle the card's final width AFTER this
     // point (e.g. during initial masonry layout), leaving Leaflet -- and
@@ -1114,6 +1173,74 @@ class ChronoPmtilesCard extends LitElement {
       }
     });
     this._resizeObserver.observe(mapEl);
+  }
+
+  // v0.2.40: resolves the style (loading a style file if "flavor" names
+  // one) and then adds the MapLibre layer to the given Leaflet map. If the
+  // card was torn down or rebuilt while the style file was loading
+  // (this._leafletMap is no longer that map), nothing is added.
+  async _buildStyle(leafletMap) {
+    const style = await resolveStyle(this._config);
+    if (this._leafletMap !== leafletMap) return; // torn down meanwhile
+
+    const pmtilesUrl = this._config.pmtiles_url;
+    const flavorName = style.flavorName;
+    const flavor = mergeSeasoning(namedFlavor(flavorName), style.seasoning);
+    const spriteUrl = `https://protomaps.github.io/basemaps-assets/sprites/v4/${flavorName}`;
+
+    this._glLayer = L.maplibreGL({
+      style: {
+        version: 8,
+        // Protomaps' free hosted glyphs/sprites (per your original brief --
+        // fine to start with, can move to self-hosted later). Required for
+        // any text label or icon layer to render at all; without "glyphs"
+        // specifically, MapLibre silently drops all text layers with no
+        // console error, which is why labels were missing in v0.0.5.
+        glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
+        sprite: spriteUrl,
+        sources: {
+          'chrono-pmtiles-source': {
+            type: 'vector',
+            url: `pmtiles://${pmtilesUrl}`,
+            attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
+          },
+        },
+        layers: applyLayerOverrides(
+          layers('chrono-pmtiles-source', flavor, { lang: 'en' }),
+          style.layers
+        ),
+      },
+    }).addTo(this._leafletMap);
+
+    // Shield badge fill/border colors aren't reachable through Flavor/
+    // palette or layer paint/layout properties -- they're baked into the
+    // sprite image itself (see v0.0.8 version history). getMaplibreMap() is
+    // maplibre-gl-leaflet's public accessor for the real maplibregl.Map
+    // instance it constructs internally.
+    const maplibreMap = this._glLayer.getMaplibreMap();
+    // v0.1.29: after the shield recolor has finished (instantly, if no
+    // shield colors are configured), wait for MapLibre's next "idle" event
+    // -- all tiles loaded, all rendering done, no transitions -- and then
+    // re-measure and resize once, which makes MapLibre re-run symbol
+    // placement with everything final. See v0.1.29 version history.
+    maplibreMap.on('load', () => {
+      applyShieldColors(maplibreMap, spriteUrl, flavorName, style.seasoning)
+        .catch((err) => {
+          console.error('[chrono-pmtiles-card] Failed to apply shield colors:', err);
+        })
+        .finally(() => {
+          if (this._glLayer?.getMaplibreMap() !== maplibreMap) return; // map torn down meanwhile
+          maplibreMap.once('idle', () => {
+            if (!this._leafletMap || this._glLayer?.getMaplibreMap() !== maplibreMap) return;
+            this._leafletMap.invalidateSize();
+            maplibreMap.resize();
+          });
+          // "idle" only fires after a render; if the map was already idle
+          // (e.g. no shield colors, so nothing changed), force one frame so
+          // the listener above is guaranteed to run.
+          maplibreMap.triggerRepaint();
+        });
+    });
   }
 
   // v0.1.32: zoom limits. min/max_zoom_level are undocumented overrides
