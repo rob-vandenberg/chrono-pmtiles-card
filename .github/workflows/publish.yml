@@ -37,19 +37,19 @@ jobs:
         id: commit_author
         run: echo "name=$(git log -1 --pretty=%an "${{ steps.version.outputs.version }}")" >> $GITHUB_OUTPUT
 
-      - name: Install dependencies
-        run: yarn install
+      - name: Check that dist was built from this version
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          PATTERN="[\"'\`]${VER//./\\.}[\"'\`]"
+          if ! grep -qE "$PATTERN" "dist/${{ env.PROJECT_NAME }}.js"; then
+            echo "::error::dist/${{ env.PROJECT_NAME }}.js does not contain version $VER. Run release.bat to build it."
+            exit 1
+          fi
 
-      - name: Build
-        run: yarn build
-
-      - name: Commit and push
-        uses: EndBug/add-and-commit@v10
-        with:
-          add: '["dist/${{ env.PROJECT_NAME }}.js"]'
-          message: "Publishing version ${{ steps.version.outputs.version }}"
-          tag: "v${{ steps.version.outputs.version }}"
-          tag_push: '--force'
+      - name: Create version tag
+        run: |
+          git tag -f "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}" --force
 
       - name: Publish Github release
         uses: ncipollo/release-action@v1

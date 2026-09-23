@@ -27,6 +27,7 @@ screenshot/
 release/
 github/
 ha/ 
+node_modules/
 
 # Files
 *.bak

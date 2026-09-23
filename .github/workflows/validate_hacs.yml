@@ -1,10 +1,9 @@
 name: HACS Action
 
 on:
-  workflow_run:
-    workflows: ["Build"]
-    types:
-      - completed
+  push:
+    branches:
+      - main
   schedule:
     - cron: "0 0 * * *"
 
