@@ -14,9 +14,11 @@ import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPath
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.103';
+const CARD_VERSION = '1.0.104';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.104: Fix duplicate library stylesheets: _injectLibraryStyles() only adopts leaflet.css and
+//           maplibre-gl.css if not already in the shadow root (every reconnect added another copy).
 // v1.0.103: One-way arrow SDF is now a real distance field (chrono-pmtiles-shields 1.0.102): thin
 //           stem keeps its width, icon-halo-color works. No code change in this file.
 // v1.0.102: One-way arrows as SDF image at map load (applyOnewayArrowSdf()), so layers.roads_oneway
@@ -707,14 +709,16 @@ class ChronoPmtilesCard extends LitElement {
   }
 
   // Adopts leaflet.css and maplibre-gl.css into the shadow root (a <link> in <head> can't reach it).
+  // Sheets already adopted are skipped: they stay after teardown, and _initMap() runs on every reconnect.
   async _injectLibraryStyles() {
     const sheets = await Promise.all([
       loadSharedStylesheet('leaflet-css', 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css'),
       loadSharedStylesheet('maplibre-css', 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.10.0/dist/maplibre-gl.css'),
     ]);
+    const adopted = this.shadowRoot.adoptedStyleSheets;
     this.shadowRoot.adoptedStyleSheets = [
-      ...this.shadowRoot.adoptedStyleSheets,
-      ...sheets,
+      ...adopted,
+      ...sheets.filter((sheet) => !adopted.includes(sheet)),
     ];
   }
 }
