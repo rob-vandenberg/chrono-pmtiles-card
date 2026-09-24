@@ -2,12 +2,20 @@
  * chrono-pmtiles-entities
  */
 
-import L from 'https://esm.sh/leaflet@1.9.4';
+import L                   from 'https://esm.sh/leaflet@1.9.4';
+import xss                 from 'https://esm.sh/xss@1.0.15';          // HA's filterXSS (same version as HA)
+import { timeZonesNames }  from 'https://esm.sh/@vvo/tzdb@6.198.0';   // HA's resolveTimeZone (same version as HA)
 
 // --- Version ---------------------------------------------------------------
-const MODULE_VERSION = '1.0.100';
+const MODULE_VERSION = '1.0.101';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.101: Trails as HA's map card: subscribeTrailHistory() (history/stream, old points expire),
+//           buildTrailPaths() (time = last_updated, skips zones and falsy lat/lon, name = config
+//           "name" or state name), buildTrailLayerGroup() per HA's _drawPaths (segment gets the older
+//           point's opacity, antimeridian split, touch dot radius 8, xss-filtered tooltip; 1 or 2
+//           points opacity 1). Time zone per profile as HA; > 144 h HA's date format. Fix: 12h check
+//           used 'am_pm' instead of HA's '12'. Removed fetchEntityTrailHistory()/getEntityTrailPoint().
 // v1.0.100: Split off from chrono-pmtiles-card 0.2.46; code moved unchanged.
 //           Full earlier history in the main file.
 
@@ -34,23 +42,211 @@ export function getEntityLatLon(stateObj) {
   return [lat, lon];
 }
 
-// Same as getEntityLatLon, plus last_changed for the trail-point tooltip.
-function getEntityTrailPoint(stateObj) {
-  const latLon = getEntityLatLon(stateObj);
-  if (!latLon) return null;
-  return { lat: latLon[0], lon: latLon[1], time: stateObj.last_changed };
+// --- Trail history (port of HA's data/history.ts, v1.0.101) -------------------
+
+// Port of HA's HistoryStream.processMessage(): merges stream messages per entity (sorted by lu) and
+// drops states older than hoursToShow, keeping the last expired state re-stamped at the window start.
+class HistoryStream {
+  constructor(hoursToShow) {
+    this.hoursToShow = hoursToShow;
+    this.combinedHistory = {};
+  }
+
+  processMessage(streamMessage) {
+    if (!this.combinedHistory || !Object.keys(this.combinedHistory).length) {
+      this.combinedHistory = streamMessage.states;
+      return this.combinedHistory;
+    }
+    if (!Object.keys(streamMessage.states).length) {
+      // Empty messages are still sent to indicate no more historical events.
+      return this.combinedHistory;
+    }
+    const purgeBeforePythonTime = this.hoursToShow
+      ? (new Date().getTime() - 60 * 60 * this.hoursToShow * 1000) / 1000
+      : undefined;
+    const newHistory = {};
+    const streamStates = streamMessage.states;
+    const processEntity = (entityId) => {
+      const inCombined = entityId in this.combinedHistory;
+      const inStream = entityId in streamStates;
+      if (inCombined && inStream) {
+        const entityCombinedHistory = this.combinedHistory[entityId];
+        const lastEntityCombinedHistory = entityCombinedHistory[entityCombinedHistory.length - 1];
+        newHistory[entityId] = entityCombinedHistory.concat(streamStates[entityId]);
+        if (streamStates[entityId][0].lu < lastEntityCombinedHistory.lu) {
+          // Out of order: sort.
+          newHistory[entityId] = newHistory[entityId].sort((a, b) => a.lu - b.lu);
+        }
+      } else if (inCombined) {
+        newHistory[entityId] = this.combinedHistory[entityId];
+      } else {
+        newHistory[entityId] = streamStates[entityId];
+        return;
+      }
+      // Remove old history.
+      if (purgeBeforePythonTime) {
+        const states = newHistory[entityId];
+        const kept = [];
+        let lastExpiredState;
+        for (const state of states) {
+          if (state.lu < purgeBeforePythonTime) {
+            lastExpiredState = state;
+          } else {
+            kept.push(state);
+          }
+        }
+        if (!lastExpiredState) {
+          return;
+        }
+        newHistory[entityId] = kept;
+        if (kept.length && kept[0].lu === purgeBeforePythonTime) {
+          return;
+        }
+        // Keep the start-time state; only the rest expires as it ages.
+        lastExpiredState.lu = purgeBeforePythonTime;
+        delete lastExpiredState.lc;
+        kept.unshift(lastExpiredState);
+      }
+    };
+    for (const entityId of Object.keys(this.combinedHistory)) {
+      processEntity(entityId);
+    }
+    for (const entityId of Object.keys(streamStates)) {
+      if (!(entityId in this.combinedHistory)) {
+        processEntity(entityId);
+      }
+    }
+    this.combinedHistory = newHistory;
+    return this.combinedHistory;
+  }
 }
 
-// Fetches one entity's position history over the last hoursToShow hours (/api/history/period).
-// Needs attributes (lat/lon), so no minimal_response/no_attributes. Returns {lat, lon, time}.
-export async function fetchEntityTrailHistory(hass, entityId, hoursToShow) {
-  const end = new Date();
-  const start = new Date(end.getTime() - hoursToShow * 60 * 60 * 1000);
-  // significant_changes_only=0: otherwise GPS-only updates of "person" are dropped (v0.1.34).
-  const path = `history/period/${start.toISOString()}?filter_entity_id=${encodeURIComponent(entityId)}&end_time=${encodeURIComponent(end.toISOString())}&significant_changes_only=0`;
-  const result = await hass.callApi('GET', path);
-  const states = result?.[0] ?? [];
-  return states.map(getEntityTrailPoint).filter(Boolean);
+// Port of HA's subscribeHistoryStatesTimeWindow() + subscribeHistoryStream(), with the map card's
+// arguments (attributes on, full response, all changes). callback gets the combined history
+// ({entity_id: [{s, a, lc?, lu}]}) on every message. On a reconnect ("ready") it resubscribes with a
+// fresh window and a fresh HistoryStream. Resolves to an async unsubscribe function.
+export async function subscribeTrailHistory(hass, callback, hoursToShow, entityIds) {
+  let currentUnsub;
+  let disposed = false;
+
+  const buildParams = () => ({
+    type: 'history/stream',
+    entity_ids: entityIds,
+    // Recomputed on every (re)subscribe, so the window stays anchored to "now".
+    start_time: new Date(new Date().getTime() - 60 * 60 * hoursToShow * 1000).toISOString(),
+    minimal_response: false,
+    significant_changes_only: false,
+    no_attributes: false,
+  });
+
+  const doSubscribe = async () => {
+    const stream = new HistoryStream(hoursToShow);
+    const unsub = await hass.connection.subscribeMessage(
+      (message) => callback(stream.processMessage(message)),
+      buildParams(),
+      { resubscribe: false }
+    );
+    if (disposed) {
+      unsub().catch(() => undefined);
+      return;
+    }
+    currentUnsub = unsub;
+  };
+
+  const onReady = () => {
+    if (disposed) return;
+    currentUnsub = undefined;
+    // Reconnect failures are swallowed, as in HA.
+    doSubscribe().catch(() => undefined);
+  };
+
+  await doSubscribe();
+  hass.connection.addEventListener('ready', onReady);
+
+  return async () => {
+    disposed = true;
+    hass.connection.removeEventListener('ready', onReady);
+    if (currentUnsub) {
+      await currentUnsub();
+    }
+  };
+}
+
+// Port of HA's computeStateName(): friendly_name, else the object id with "_" as spaces.
+function computeStateName(stateObj) {
+  const friendlyName = stateObj.attributes.friendly_name;
+  return friendlyName === undefined
+    ? stateObj.entity_id.slice(stateObj.entity_id.indexOf('.') + 1).replace(/_/g, ' ')
+    : (friendlyName ?? '').toString();
+}
+
+// Port of HA's map card _getHistoryPaths(): one path per entity in the history (zones skipped),
+// points without a truthy lat/lon skipped, timestamp = last_updated (lu). Name: the entity config's
+// "name", else the state name, else the entity id. Returns undefined without history or hours_to_show.
+export function buildTrailPaths(history, config, hass) {
+  const hoursToShow = config.hours_to_show ?? 0;
+  if (!history || !hoursToShow) {
+    return undefined;
+  }
+  const entityConfigs = (config.entities ?? []).map(normalizeEntityConfig);
+  const paths = [];
+  for (const entityId of Object.keys(history)) {
+    if (entityId.slice(0, entityId.indexOf('.')) === 'zone') {
+      continue;
+    }
+    const entityStates = history[entityId];
+    if (!entityStates?.length) {
+      continue;
+    }
+    const points = [];
+    for (const entityState of entityStates) {
+      const latitude = entityState.a.latitude;
+      const longitude = entityState.a.longitude;
+      if (!latitude || !longitude) {
+        continue;
+      }
+      points.push({ point: [latitude, longitude], timestamp: new Date(entityState.lu * 1000) });
+    }
+    const entityConfig = entityConfigs.find((e) => e.entity === entityId);
+    const name =
+      entityConfig?.name ??
+      (entityId in hass.states ? computeStateName(hass.states[entityId]) : entityId);
+    paths.push({
+      entityId,
+      points,
+      name,
+      fullDatetime: hoursToShow > 144,
+      gradualOpacity: 0.8,
+    });
+  }
+  return paths;
+}
+
+// --- Trail tooltip helpers (ports of HA helpers) -------------------------------
+
+// Port of HA's isTouch.
+const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+// Port of HA's filterXSS(): strips all HTML.
+function filterXSS(html) {
+  return xss(html, {
+    whiteList: {},
+    stripIgnoreTag: true,
+    stripIgnoreTagBody: true,
+  });
+}
+
+// Port of HA's resolve-time-zone.ts: the browser's zone counts only if it is a known IANA zone.
+const RESOLVED_RAW = Intl.DateTimeFormat?.().resolvedOptions?.().timeZone;
+const RESOLVED_TIME_ZONE =
+  RESOLVED_RAW &&
+  (RESOLVED_RAW === 'UTC' || RESOLVED_RAW === 'Etc/UTC' || timeZonesNames.includes(RESOLVED_RAW))
+    ? RESOLVED_RAW
+    : undefined;
+
+// Profile time zone "local" uses the browser's zone (if known), else the server's.
+function resolveTimeZone(option, serverTimeZone) {
+  return option === 'local' && RESOLVED_TIME_ZONE ? RESOLVED_TIME_ZONE : serverTimeZone;
 }
 
 // Port of HA's useAmPm(): 12h vs 24h from the user's HA profile locale settings.
@@ -61,23 +257,23 @@ function useAmPm(locale) {
     const test = new Date('January 1, 2023 22:00:00').toLocaleString(testLanguage);
     return test.includes('10');
   }
-  return timeFormat === 'am_pm';
+  return timeFormat === '12';
 }
 
-// Formats a trail point's time as HA's map card: > 144 h full date + time, today time with
-// seconds, else weekday + time. 12h/24h per useAmPm(), time zone from hass.config.
-function formatTrailPointTime(hass, timestamp, hoursToShow) {
+// Formats a trail point's time as HA's map card: fullDatetime (> 144 h) date + time, today time
+// with seconds, else weekday + time. 12h/24h per useAmPm(), time zone per resolveTimeZone().
+function formatTrailPointTime(hass, timestamp, fullDatetime) {
   const date = new Date(timestamp);
   const locale = hass?.locale;
   const language = locale?.language;
-  const timeZone = hass?.config?.time_zone;
+  const timeZone = resolveTimeZone(locale?.time_zone, hass?.config?.time_zone);
   const hour12 = useAmPm(locale);
   const hourCycle = hour12 ? 'h12' : 'h23';
 
-  if (hoursToShow > 144) {
+  if (fullDatetime) {
     return new Intl.DateTimeFormat(language, {
-      year: 'numeric', month: 'numeric', day: 'numeric',
-      hour: hour12 ? 'numeric' : '2-digit', minute: '2-digit', second: '2-digit',
+      year: 'numeric', month: 'long', day: 'numeric',
+      hour: hour12 ? 'numeric' : '2-digit', minute: '2-digit',
       hourCycle,
       timeZone,
     }).format(date);
@@ -125,7 +321,8 @@ export function computeAutoFitEntityPoints(hass, entityEntries) {
 }
 
 // Trail style per entity: per-entity value, then root default, then fallback. history_line_color
-// also falls back to the entity's "color" (as chrono-map-card).
+// also falls back to the entity's "color" (as chrono-map-card). Dot radius fallback as HA: 8 on
+// touch devices, else 3.
 export function resolveTrailStyle(entityConfig, rootConfig, markerColor) {
   const color =
     entityConfig.history_line_color ??
@@ -139,57 +336,86 @@ export function resolveTrailStyle(entityConfig, rootConfig, markerColor) {
   const radius =
     entityConfig.history_dot_radius ??
     rootConfig.history_dot_radius ??
-    3;
+    (IS_TOUCH ? 8 : 3);
   return { color, width, radius };
 }
 
-// Builds one entity's trail: a segment per point pair plus a dot per point, fading from old to new
-// with HA's formula (base 0.2, step 0.8/(n-2); 2 points: opacity 1). Each dot has a hover tooltip
-// with entity name and time, as HA's map card.
-export function buildTrailLayerGroup(points, style, hass, hoursToShow, entityName) {
+// Port of HA's map _drawPaths() for one path from buildTrailPaths(): per point a dot, then the
+// segment to the next point with that (older) point's opacity; segments crossing the antimeridian
+// are split. Opacity per HA (base 1 - gradualOpacity, step gradualOpacity/(n-2)), except 1 or 2
+// points: opacity 1 (HA gives 0.2 for 1 point and divides by zero for 2). Tooltip per HA.
+export function buildTrailLayerGroup(path, style, hass) {
   const group = L.layerGroup();
+  const points = path.points;
+  const n = points.length;
 
-  const addPointMarker = (point, opacity) => {
-    const marker = L.circleMarker([point.lat, point.lon], {
+  let opacityStep;
+  let baseOpacity;
+  if (path.gradualOpacity && n > 2) {
+    opacityStep = path.gradualOpacity / (n - 2);
+    baseOpacity = 1 - path.gradualOpacity;
+  }
+  const opacityAt = (pointIndex) => {
+    if (!path.gradualOpacity) return undefined;
+    if (n <= 2) return 1;
+    return baseOpacity + pointIndex * opacityStep;
+  };
+
+  const tooltip = (point) =>
+    `${filterXSS(path.name ?? '')}<br>${formatTrailPointTime(hass, point.timestamp, path.fullDatetime)}`;
+
+  const addDot = (point, opacity) => {
+    L.circleMarker(point.point, {
       radius: style.radius,
       color: style.color,
       weight: style.width,
       opacity,
       fillOpacity: opacity,
       interactive: true,
-    }).addTo(group);
-    const formattedTime = formatTrailPointTime(hass, point.time, hoursToShow);
-    marker.bindTooltip(`<div style="text-align:center;">${entityName}<br>${formattedTime}</div>`, { direction: 'top' });
+    }).bindTooltip(tooltip(point), { direction: 'top' }).addTo(group);
   };
 
-  if (points.length < 2) {
-    if (points.length === 1) {
-      addPointMarker(points[0], 1);
+  const addLine = (latLngs, opacity) => {
+    L.polyline(latLngs, {
+      color: style.color,
+      weight: style.width,
+      opacity,
+      interactive: false,
+    }).addTo(group);
+  };
+
+  for (let pointIndex = 0; pointIndex < n - 1; pointIndex++) {
+    const opacity = opacityAt(pointIndex);
+    const thisPoint = points[pointIndex];
+    const nextPoint = points[pointIndex + 1];
+
+    addDot(thisPoint, opacity);
+
+    if (Math.abs(thisPoint.point[1] - nextPoint.point[1]) <= 180) {
+      addLine([thisPoint.point, nextPoint.point], opacity);
+    } else {
+      // Crosses the antimeridian: split into two lines, so it isn't drawn across the whole map.
+      const longitudeDifference = ((nextPoint.point[1] - thisPoint.point[1] + 540) % 360) - 180;
+      let intersectionLatitude;
+      if (longitudeDifference === 0) {
+        intersectionLatitude = (thisPoint.point[0] + nextPoint.point[0]) / 2;
+      } else {
+        intersectionLatitude =
+          thisPoint.point[0] +
+          ((nextPoint.point[0] - thisPoint.point[0]) *
+            (thisPoint.point[1] > 0 ? 180 - thisPoint.point[1] : -180 - thisPoint.point[1])) /
+            longitudeDifference;
+      }
+      const intersectionPoint1 = [intersectionLatitude, thisPoint.point[1] > 0 ? 180 : -180];
+      const intersectionPoint2 = [intersectionLatitude, nextPoint.point[1] > 0 ? 180 : -180];
+      addLine([thisPoint.point, intersectionPoint1], opacity);
+      addLine([intersectionPoint2, nextPoint.point], opacity);
     }
-    return group;
   }
-
-  const gradualOpacity = 0.8;
-  const baseOpacity = 1 - gradualOpacity;
-  const opacityStep = points.length > 2 ? gradualOpacity / (points.length - 2) : 0;
-
-  points.forEach((point, index) => {
-    const opacity = points.length > 2
-      ? baseOpacity + index * opacityStep
-      : 1;
-
-    if (index > 0) {
-      const prev = points[index - 1];
-      L.polyline([[prev.lat, prev.lon], [point.lat, point.lon]], {
-        color: style.color,
-        weight: style.width,
-        opacity,
-        interactive: false,
-      }).addTo(group);
-    }
-
-    addPointMarker(point, opacity);
-  });
+  if (n - 1 >= 0) {
+    // End point.
+    addDot(points[n - 1], opacityAt(n - 1));
+  }
 
   return group;
 }
