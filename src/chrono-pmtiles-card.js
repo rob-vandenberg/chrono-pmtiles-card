@@ -10,13 +10,17 @@ import { Protocol }              from 'https://esm.sh/pmtiles@4.5.0';
 import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2';  // no ?deps= needed: no maplibre-gl/leaflet dependency of its own
 import { applyLayerOverrides, mergeSeasoning, resolveStyle, buildControlsCss } from './chrono-pmtiles-style.js';
 import { applyShieldColors }                                                    from './chrono-pmtiles-shields.js';
-import { buildMarkerHtml, getEntityLatLon, fetchEntityTrailHistory, normalizeEntityConfig,
+import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPaths, normalizeEntityConfig,
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.100';
+const CARD_VERSION = '1.0.101';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.101: Trails as HA's map card: one history/stream subscription for all entities replaces the
+//           REST fetch and the live point appending; old points expire; all trails redrawn per
+//           message; tooltip time from last_updated (was last_changed); HA's tooltip look; a
+//           subscription error shows HA's error alert instead of the map.
 // v1.0.100: New codebase: split into modules chrono-pmtiles-style, -shields and -entities (style files,
 //           shield recolor, markers/trails). resolveStyle() takes DEFAULT_THEME as a parameter. No behavior change.
 // v0.2.46: Compacted the version history and code comments (full history in 0.2.45 and older).
@@ -119,6 +123,7 @@ class ChronoPmtilesCard extends LitElement {
   static properties = {
     hass:    { attribute: false },
     _config: { state: true },
+    _historyError: { state: true },
   };
 
   static getCardSize() {
@@ -180,10 +185,27 @@ class ChronoPmtilesCard extends LitElement {
       color: #bbb;
       cursor: default;
     }
+    /* Trail tooltip as HA's ha-map; .map-container outranks leaflet.css (adopted later). */
+    .map-container .leaflet-tooltip {
+      padding: 8px;
+      font-size: var(--ha-font-size-s);
+      background: rgba(80, 80, 80, 0.9) !important;
+      color: white !important;
+      border-radius: var(--ha-border-radius-sm);
+      box-shadow: none !important;
+      text-align: center;
+    }
   `;
 
   render() {
     if (!this._config) return html``;
+    // History subscription failed: HA's error alert instead of the map, as HA's map card.
+    if (this._historyError) {
+      return html`<ha-alert alert-type="error">
+        ${this.hass.localize('ui.components.map.error')}: ${this._historyError.message}
+        (${this._historyError.code})
+      </ha-alert>`;
+    }
     const height = this._config.map_height || DEFAULT_MAP_HEIGHT;
     return html`
       <div class="map-container" style="height: ${height};">
@@ -203,7 +225,7 @@ class ChronoPmtilesCard extends LitElement {
   // Waits for updateComplete, because <div id="map"> is not back in the DOM yet.
   connectedCallback() {
     super.connectedCallback();
-    if (this._config && !this._leafletMap) {
+    if (this._config && !this._leafletMap && !this._historyError) {
       this.updateComplete.then(() => {
         this._initMap();
         this._initEntities();
@@ -520,6 +542,10 @@ class ChronoPmtilesCard extends LitElement {
   }
 
   _teardownMap() {
+    if (this._historyUnsub) {
+      this._historyUnsub.then((unsub) => unsub?.()).catch(() => undefined);
+      this._historyUnsub = null;
+    }
     // The lat/lon display is not a Leaflet control, so map.remove() doesn't remove it.
     if (this._centerControlEl) {
       this._centerControlEl.remove();
@@ -544,9 +570,8 @@ class ChronoPmtilesCard extends LitElement {
     }
     this._entityMarkers = null;
     this._entityMarkerHtml = null;
-    this._entityTrails = null;
-    this._entityTrailPoints = null;
-    this._entityTrailStyles = null;
+    this._trailGroup = null;
+    this._trailHistory = null;
   }
 
   // --- Entity tracking ---------------------------------------------------
@@ -558,34 +583,38 @@ class ChronoPmtilesCard extends LitElement {
 
     this._entityMarkers = new Map();
     this._entityMarkerHtml = new Map();
-    this._entityTrails = new Map();
-    this._entityTrailPoints = new Map();
-    this._entityTrailStyles = new Map();
 
+    // Trails as HA's map card: one history/stream subscription for all configured entities (also
+    // those without a current state), skipped without the history component or hours_to_show.
     const hoursToShow = this._config.hours_to_show ?? 0;
+    if (hoursToShow && this.hass?.config?.components?.includes('history')) {
+      // Trail group first, so the markers are drawn on top of it.
+      this._trailGroup = L.layerGroup().addTo(this._leafletMap);
+      const subscription = subscribeTrailHistory(
+        this.hass,
+        (history) => {
+          if (this._historyUnsub !== subscription) return; // message came in after unsubscribing
+          this._trailHistory = history;
+          this._drawTrails();
+        },
+        hoursToShow,
+        this._trackedEntityIds()
+      ).catch((err) => {
+        // As HA: no retry; the card shows the error instead of the map.
+        if (this._historyUnsub !== subscription) return undefined;
+        this._historyUnsub = null;
+        this._teardownMap();
+        this._historyError = err;
+        return undefined;
+      });
+      this._historyUnsub = subscription;
+    }
 
     for (const rawEntry of entityEntries) {
       const entityConfig = normalizeEntityConfig(rawEntry);
       const entityId = entityConfig.entity;
       const stateObj = this.hass?.states?.[entityId];
       if (!stateObj) continue;
-
-      const markerColor = entityConfig.color;
-      const style = resolveTrailStyle(entityConfig, this._config, markerColor);
-      this._entityTrailStyles.set(entityId, style);
-
-      if (hoursToShow > 0) {
-        // Trail first, so the marker is drawn on top of it.
-        const trailGroup = L.layerGroup().addTo(this._leafletMap);
-        this._entityTrails.set(entityId, trailGroup);
-        this._entityTrailPoints.set(entityId, []);
-        fetchEntityTrailHistory(this.hass, entityId, hoursToShow)
-          .then((points) => {
-            this._entityTrailPoints.set(entityId, points);
-            this._redrawEntityTrail(entityId);
-          })
-          .catch((err) => console.error(`[chrono-pmtiles-card] Failed to fetch history for ${entityId}:`, err));
-      }
 
       const latLon = getEntityLatLon(stateObj);
       if (!latLon) continue;
@@ -603,25 +632,23 @@ class ChronoPmtilesCard extends LitElement {
     }
   }
 
-  // Rebuilds one entity's trail from all stored points (opacity depends on the point count),
-  // reusing the same layerGroup so it stays on the map.
-  _redrawEntityTrail(entityId) {
-    const trailGroup = this._entityTrails?.get(entityId);
-    const points = this._entityTrailPoints?.get(entityId);
-    const style = this._entityTrailStyles?.get(entityId);
-    if (!trailGroup || !points || !style) return;
-
-    const stateObj = this.hass?.states?.[entityId];
-    const entityName = stateObj?.attributes?.friendly_name || entityId;
-    const hoursToShow = this._config.hours_to_show ?? 0;
-
-    trailGroup.clearLayers();
-    const freshGroup = buildTrailLayerGroup(points, style, this.hass, hoursToShow, entityName);
-    freshGroup.eachLayer((layer) => trailGroup.addLayer(layer));
+  // Redraws all trails from the latest history, reusing the same layerGroup so it stays on the map.
+  _drawTrails() {
+    if (!this._trailGroup) return;
+    this._trailGroup.clearLayers();
+    const paths = buildTrailPaths(this._trailHistory, this._config, this.hass) ?? [];
+    for (const path of paths) {
+      const entityConfig = (this._config.entities ?? [])
+        .map(normalizeEntityConfig)
+        .find((e) => e.entity === path.entityId) ?? {};
+      const style = resolveTrailStyle(entityConfig, this._config, entityConfig.color);
+      buildTrailLayerGroup(path, style, this.hass)
+        .eachLayer((layer) => this._trailGroup.addLayer(layer));
+    }
   }
 
   // Updates changed entities (null = all): moves a marker only if its position changed, replaces
-  // its icon only if the HTML changed (v0.1.28), and appends new positions to the trail.
+  // its icon only if the HTML changed (v0.1.28). Trails are updated by the history stream.
   _updateEntityPositions(entityIds = null) {
     if (!this._entityMarkers) return;
     for (const [entityId, marker] of this._entityMarkers) {
@@ -643,15 +670,6 @@ class ChronoPmtilesCard extends LitElement {
           iconSize: [36, 36],
         }));
         this._entityMarkerHtml?.set(entityId, markerHtml);
-      }
-
-      const points = this._entityTrailPoints?.get(entityId);
-      if (points) {
-        const last = points[points.length - 1];
-        if (!last || last.lat !== latLon[0] || last.lon !== latLon[1]) {
-          points.push({ lat: latLon[0], lon: latLon[1], time: stateObj.last_changed });
-          this._redrawEntityTrail(entityId);
-        }
       }
     }
   }
