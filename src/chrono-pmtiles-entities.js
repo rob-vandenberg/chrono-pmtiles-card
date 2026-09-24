@@ -7,9 +7,10 @@ import xss                 from 'https://esm.sh/xss@1.0.15';          // HA's fi
 import { timeZonesNames }  from 'https://esm.sh/@vvo/tzdb@6.198.0';   // HA's resolveTimeZone (same version as HA)
 
 // --- Version ---------------------------------------------------------------
-const MODULE_VERSION = '1.0.101';
+const MODULE_VERSION = '1.0.102';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.102: Marker initials 14 px (was 11 px), for the 48 px markers of chrono-pmtiles-card 1.0.105.
 // v1.0.101: Trails as HA's map card: subscribeTrailHistory() (history/stream, old points expire),
 //           buildTrailPaths() (time = last_updated, skips zones and falsy lat/lon, name = config
 //           "name" or state name), buildTrailLayerGroup() per HA's _drawPaths (segment gets the older
@@ -21,7 +22,7 @@ const MODULE_VERSION = '1.0.101';
 
 // Marker HTML: entity_picture if present, else initials (as HA's own map card). Inline styles,
 // because HA's CSS overrides an injected stylesheet (v0.0.11).
-const MARKER_WRAPPER_STYLE = 'width:100%;height:100%;border-radius:50%;border:2px solid #ffffff;box-shadow:0 1px 4px rgba(0,0,0,0.4);background:#4676d3;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#ffffff;font:bold 11px sans-serif;box-sizing:border-box;';
+const MARKER_WRAPPER_STYLE = 'width:100%;height:100%;border-radius:50%;border:2px solid #ffffff;box-shadow:0 1px 4px rgba(0,0,0,0.4);background:#4676d3;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#ffffff;font:bold 14px sans-serif;box-sizing:border-box;';
 const MARKER_IMG_STYLE = 'width:100%;height:100%;object-fit:cover;display:block;';
 
 export function buildMarkerHtml(hass, stateObj) {
