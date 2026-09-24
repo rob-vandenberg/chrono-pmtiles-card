@@ -14,9 +14,11 @@ import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPath
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.104';
+const CARD_VERSION = '1.0.105';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.105: Entity markers 48 px (was 36 px, incl. the 2 px border), set once in MARKER_SIZE; initials
+//           14 px (chrono-pmtiles-entities 1.0.102).
 // v1.0.104: Fix duplicate library stylesheets: _injectLibraryStyles() only adopts leaflet.css and
 //           maplibre-gl.css if not already in the shadow root (every reconnect added another copy).
 // v1.0.103: One-way arrow SDF is now a real distance field (chrono-pmtiles-shields 1.0.102): thin
@@ -105,6 +107,7 @@ console.info(
 const DEFAULT_PMTILES_URL = '/local/europe.pmtiles';
 
 const DEFAULT_MAP_HEIGHT = '300px';
+const MARKER_SIZE        = 48; // entity marker diameter in px, including its 2 px border
 // v0.1.32 zoom constants (see version history):
 const MIN_ZOOM_LEVEL             = 1;  // overridable via undocumented min_zoom_level
 const MAX_ZOOM_LEVEL             = 18; // overridable via undocumented max_zoom_level
@@ -635,7 +638,7 @@ class ChronoPmtilesCard extends LitElement {
       const icon = L.divIcon({
         html: markerHtml,
         className: '',
-        iconSize: [36, 36],
+        iconSize: [MARKER_SIZE, MARKER_SIZE],
       });
       const marker = L.marker(latLon, { icon }).addTo(this._leafletMap);
       marker.bindPopup(stateObj.attributes.friendly_name || entityId);
@@ -679,7 +682,7 @@ class ChronoPmtilesCard extends LitElement {
         marker.setIcon(L.divIcon({
           html: markerHtml,
           className: '',
-          iconSize: [36, 36],
+          iconSize: [MARKER_SIZE, MARKER_SIZE],
         }));
         this._entityMarkerHtml?.set(entityId, markerHtml);
       }
