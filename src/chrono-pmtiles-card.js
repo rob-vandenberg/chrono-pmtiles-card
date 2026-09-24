@@ -9,14 +9,16 @@ import 'https://esm.sh/@maplibre/maplibre-gl-leaflet@0.1.4?deps=maplibre-gl@6.10
 import { Protocol }              from 'https://esm.sh/pmtiles@4.5.0';
 import { layers, namedFlavor }   from 'https://esm.sh/@protomaps/basemaps@5.7.2';  // no ?deps= needed: no maplibre-gl/leaflet dependency of its own
 import { applyLayerOverrides, mergeSeasoning, resolveStyle, buildControlsCss } from './chrono-pmtiles-style.js';
-import { applyShieldColors }                                                    from './chrono-pmtiles-shields.js';
+import { applyShieldColors, applyOnewayArrowSdf }                               from './chrono-pmtiles-shields.js';
 import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPaths, normalizeEntityConfig,
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.101';
+const CARD_VERSION = '1.0.102';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.102: One-way arrows as SDF image at map load (applyOnewayArrowSdf()), so layers.roads_oneway
+//           icon-color (also per road kind/zoom) and icon-halo-color work; default: the arrow's own color.
 // v1.0.101: Trails as HA's map card: one history/stream subscription for all entities replaces the
 //           REST fetch and the live point appending; old points expire; all trails redrawn per
 //           message; tooltip time from last_updated (was last_changed); HA's tooltip look; a
@@ -360,6 +362,12 @@ class ChronoPmtilesCard extends LitElement {
     const maplibreMap = this._glLayer.getMaplibreMap();
     // After the shield recolor, resize once on the next "idle" so labels are placed (v0.1.29).
     maplibreMap.on('load', () => {
+      // One-way arrows as SDF image, so roads_oneway icon-color works (v1.0.102).
+      try {
+        applyOnewayArrowSdf(maplibreMap, style.layers);
+      } catch (err) {
+        console.error('[chrono-pmtiles-card] Failed to make the one-way arrow colorable:', err);
+      }
       applyShieldColors(maplibreMap, spriteUrl, flavorName, style.seasoning)
         .catch((err) => {
           console.error('[chrono-pmtiles-card] Failed to apply shield colors:', err);
