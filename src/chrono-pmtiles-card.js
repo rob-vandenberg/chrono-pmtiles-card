@@ -14,9 +14,11 @@ import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPath
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.102';
+const CARD_VERSION = '1.0.103';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.103: One-way arrow SDF is now a real distance field (chrono-pmtiles-shields 1.0.102): thin
+//           stem keeps its width, icon-halo-color works. No code change in this file.
 // v1.0.102: One-way arrows as SDF image at map load (applyOnewayArrowSdf()), so layers.roads_oneway
 //           icon-color (also per road kind/zoom) and icon-halo-color work; default: the arrow's own color.
 // v1.0.101: Trails as HA's map card: one history/stream subscription for all entities replaces the
