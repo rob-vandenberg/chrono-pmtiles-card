@@ -3,9 +3,11 @@
  */
 
 // --- Version ---------------------------------------------------------------
-const MODULE_VERSION = '1.0.100';
+const MODULE_VERSION = '1.0.101';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.101: New applyOnewayArrowSdf(): the one-way "arrow" sprite image becomes an SDF image, so
+//           roads_oneway icon-color/icon-halo-color work; default icon-color = the arrow's own color.
 // v1.0.100: Split off from chrono-pmtiles-card 0.2.46; code moved unchanged.
 //           Full earlier history in the main file.
 
@@ -84,5 +86,42 @@ export async function applyShieldColors(maplibreMap, spriteUrl, theme, paletteCo
       height: entry.height,
       data: imageData.data,
     });
+  }
+}
+
+// --- One-way arrows (v1.0.101) -------------------------------------------------
+
+// Average color of the most opaque pixels (alpha >= 90% of the maximum) as #rrggbb; null if none.
+function averageOpaqueColor(data) {
+  let maxAlpha = 0;
+  for (let i = 3; i < data.length; i += 4) maxAlpha = Math.max(maxAlpha, data[i]);
+  if (maxAlpha === 0) return null;
+  const threshold = maxAlpha * 0.9;
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < threshold) continue;
+    r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+  }
+  const hex = (v) => Math.round(v / count).toString(16).padStart(2, '0');
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+// Re-adds the "arrow" sprite image (roads_oneway) unchanged but flagged as SDF, so icon-color and
+// icon-halo-color apply (the sprite image isn't SDF; updateImage() can't change the flag). Without an
+// icon-color in the layer overrides, icon-color is set to the arrow's own color (SDF default: black).
+// Must run after MapLibre's "load" (sprite loaded).
+export function applyOnewayArrowSdf(maplibreMap, layerOverrides) {
+  if (!maplibreMap.hasImage('arrow')) return;
+  const image = maplibreMap.getImage('arrow');
+  const { width, height, data } = image.data;
+  const pixels = new Uint8Array(data); // copy: removeImage() releases the original
+  const originalColor = averageOpaqueColor(pixels);
+
+  maplibreMap.removeImage('arrow');
+  maplibreMap.addImage('arrow', { width, height, data: pixels }, { pixelRatio: image.pixelRatio, sdf: true });
+
+  const overrideColor = layerOverrides?.roads_oneway?.paint?.['icon-color'];
+  if (overrideColor === undefined && originalColor && maplibreMap.getLayer('roads_oneway')) {
+    maplibreMap.setPaintProperty('roads_oneway', 'icon-color', originalColor);
   }
 }
