@@ -14,9 +14,11 @@ import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPath
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.105';
+const CARD_VERSION = '1.0.106';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.106: Marker popup text 15px (was leaflet.css 13px); trail tooltip text 14px (was HA's
+//           --ha-font-size-s, 12px).
 // v1.0.105: Entity markers 48 px (was 36 px, incl. the 2 px border), set once in MARKER_SIZE; initials
 //           14 px (chrono-pmtiles-entities 1.0.102).
 // v1.0.104: Fix duplicate library stylesheets: _injectLibraryStyles() only adopts leaflet.css and
@@ -194,15 +196,19 @@ class ChronoPmtilesCard extends LitElement {
       color: #bbb;
       cursor: default;
     }
-    /* Trail tooltip as HA's ha-map; .map-container outranks leaflet.css (adopted later). */
+    /* Trail tooltip as HA's ha-map, except font size 14px; .map-container outranks leaflet.css (adopted later). */
     .map-container .leaflet-tooltip {
       padding: 8px;
-      font-size: var(--ha-font-size-s);
+      font-size: 14px;
       background: rgba(80, 80, 80, 0.9) !important;
       color: white !important;
       border-radius: var(--ha-border-radius-sm);
       box-shadow: none !important;
       text-align: center;
+    }
+    /* Marker popup text; .map-container outranks leaflet.css's .leaflet-popup-content (13px). */
+    .map-container .leaflet-popup-content {
+      font-size: 15px;
     }
   `;
 
