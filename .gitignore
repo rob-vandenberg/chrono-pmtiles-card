@@ -36,6 +36,7 @@ node_modules/
 *.bat
 *.zip
 *.jfif
+*.py
 
 # Build output (only ever committed by the GitHub Actions build workflow)
 # dist/
