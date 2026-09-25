@@ -3,9 +3,12 @@
  */
 
 // --- Version ---------------------------------------------------------------
-const MODULE_VERSION = '1.0.102';
+const MODULE_VERSION = '1.0.103';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.103: Shield colors per shield family: Amsterdam S routes (NL:S-road) use shield_fill_nl_s /
+//           shield_border_nl_s when set, else shield_fill / shield_border; other shields unchanged.
+//           A family without any color set keeps its original look.
 // v1.0.102: applyOnewayArrowSdf() now adds a real signed distance field (TinySDF's method, 3 px border)
 //           computed from the arrow's alpha, instead of the arrow's own pixels, so the thin stem keeps
 //           its width and icon-halo-color works.
@@ -14,7 +17,8 @@ const MODULE_VERSION = '1.0.102';
 // v1.0.100: Split off from chrono-pmtiles-card 0.2.46; code moved unchanged.
 //           Full earlier history in the main file.
 
-// Shield sprite names recolored by shield_fill/shield_border (exhaustive for the v4 sprites).
+// Shield sprite names recolored by shield_fill/shield_border or their per-family keys (exhaustive
+// for the v4 sprites).
 const SHIELD_SPRITE_NAMES = [
   'generic_shield-1char', 'generic_shield-2char', 'generic_shield-3char',
   'generic_shield-4char', 'generic_shield-5char',
@@ -22,6 +26,12 @@ const SHIELD_SPRITE_NAMES = [
   'NL:S-road-4char', 'NL:S-road-5char',
   'US:I-1char', 'US:I-2char', 'US:I-3char', 'US:I-4char', 'US:I-5char',
 ];
+
+// Per-family seasoning keys (v1.0.103), keyed by sprite name without "-<n>char"; each color falls
+// back to shield_fill/shield_border. Families not listed use shield_fill/shield_border only.
+const SHIELD_FAMILY_KEYS = {
+  'NL:S-road': { fill: 'shield_fill_nl_s', border: 'shield_border_nl_s' },
+};
 
 // Shield sprite reference colors (sampled): fill/border of the light and dark sprite sheets.
 const SHIELD_REFERENCE_COLORS = {
@@ -54,16 +64,26 @@ function recolorShieldPixels(data, refFill, refBorder, newFill, newBorder) {
   }
 }
 
-// Recolors all shield sprites per shield_fill/shield_border via updateImage(); no-op if neither set.
+// Fill/border hex for one shield sprite: its family's keys, else shield_fill/shield_border (v1.0.103).
+function shieldColorsFor(name, paletteConfig) {
+  const familyKeys = SHIELD_FAMILY_KEYS[name.replace(/-\dchar$/, '')];
+  return {
+    fillHex: (familyKeys && paletteConfig?.[familyKeys.fill]) || paletteConfig?.shield_fill,
+    borderHex: (familyKeys && paletteConfig?.[familyKeys.border]) || paletteConfig?.shield_border,
+  };
+}
+
+// Recolors the shield sprites per shield_fill/shield_border (and per-family keys) via updateImage();
+// sprites without any color set are left alone, and it's a no-op if none is set at all.
 // Must run after MapLibre's "load"; uses the @1x/@2x sprite MapLibre loaded (same size required).
 export async function applyShieldColors(maplibreMap, spriteUrl, theme, paletteConfig) {
-  const fillHex = paletteConfig?.shield_fill;
-  const borderHex = paletteConfig?.shield_border;
-  if (!fillHex && !borderHex) return;
+  const anySet = SHIELD_SPRITE_NAMES.some((name) => {
+    const { fillHex, borderHex } = shieldColorsFor(name, paletteConfig);
+    return fillHex || borderHex;
+  });
+  if (!anySet) return;
 
   const ref = SHIELD_REFERENCE_COLORS[theme] ?? SHIELD_REFERENCE_COLORS.light;
-  const newFill = hexToRgb(fillHex) ?? ref.fill;
-  const newBorder = hexToRgb(borderHex) ?? ref.border;
 
   const suffix = window.devicePixelRatio > 1 ? '@2x' : '';
   const [spriteJson, spriteBlob] = await Promise.all([
@@ -81,6 +101,10 @@ export async function applyShieldColors(maplibreMap, spriteUrl, theme, paletteCo
     const entry = spriteJson[name];
     if (!entry) continue; // this sprite build doesn't include this one
     if (!maplibreMap.hasImage(name)) continue; // nothing to replace
+    const { fillHex, borderHex } = shieldColorsFor(name, paletteConfig);
+    if (!fillHex && !borderHex) continue; // no color set for this family: keep it as is
+    const newFill = hexToRgb(fillHex) ?? ref.fill;
+    const newBorder = hexToRgb(borderHex) ?? ref.border;
 
     const imageData = ctx.getImageData(entry.x, entry.y, entry.width, entry.height);
     recolorShieldPixels(imageData.data, ref.fill, ref.border, newFill, newBorder);
