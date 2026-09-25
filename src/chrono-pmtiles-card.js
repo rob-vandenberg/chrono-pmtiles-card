@@ -14,9 +14,11 @@ import { buildMarkerHtml, getEntityLatLon, subscribeTrailHistory, buildTrailPath
          computeAutoFitEntityPoints, resolveTrailStyle, buildTrailLayerGroup }   from './chrono-pmtiles-entities.js';
 
 // --- Version ---------------------------------------------------------------
-const CARD_VERSION = '1.0.106';
+const CARD_VERSION = '1.0.107';
 
 // --- Version History ---------------------------------------------------------
+// v1.0.107: Shield colors per family: new seasoning keys shield_fill_nl_s / shield_border_nl_s for
+//           Amsterdam S routes (chrono-pmtiles-shields 1.0.103). No code change in this file.
 // v1.0.106: Marker popup text 15px (was leaflet.css 13px); trail tooltip text 14px (was HA's
 //           --ha-font-size-s, 12px).
 // v1.0.105: Entity markers 48 px (was 36 px, incl. the 2 px border), set once in MARKER_SIZE; initials
