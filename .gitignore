@@ -44,3 +44,18 @@ node_modules/
 # IDE
 .vscode/
 .idea/
+
+# Never push these (cleanup 2026-09-29)
+*.log
+
+# Artwork not used in README.md
+art/chrono-pmtiles-card.svg
+art/editor.png
+art/map1.png
+art/map2.png
+art/map3.png
+art/under-construction.png
+
+# Old versioned copies
+src/chrono-pmtiles-card-35.js
+src/chrono-pmtiles-card_0.2.46.js
